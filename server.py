@@ -1,17 +1,24 @@
 """Serves the visualizer and fetches YouTube audio via yt-dlp (same origin, so Web Audio can analyse it).
-Run: python server.py  ->  http://127.0.0.1:8000"""
-import http.server, subprocess, urllib.parse, pathlib, shutil
+Run: python server.py [--host 0.0.0.0] [--port 8000]"""
+import argparse, http.server, posixpath, subprocess, urllib.parse, pathlib, shutil
 
 ROOT = pathlib.Path(__file__).parent
 CACHE = ROOT / "cache"
 YT_HOSTS = ("youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be",
             "soundcloud.com", "www.soundcloud.com", "m.soundcloud.com", "on.soundcloud.com")
+PUBLIC = ("/", "/index.html", "/vendor/", "/samples/")  # everything else (.git, cache, server.py) stays private
 TYPES = {".m4a": "audio/mp4", ".mp4": "audio/mp4", ".webm": "audio/webm", ".opus": "audio/ogg", ".mp3": "audio/mpeg"}
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **k):
         super().__init__(*a, directory=str(ROOT), **k)
+
+    def send_head(self):
+        path = posixpath.normpath(urllib.parse.unquote(urllib.parse.urlparse(self.path).path))
+        if path not in PUBLIC[:2] and not path.startswith(PUBLIC[2:]):
+            return self.send_error(404)
+        return super().send_head()
 
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
@@ -43,5 +50,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print("Trap visualizer on http://127.0.0.1:8000")
-    http.server.ThreadingHTTPServer(("127.0.0.1", 8000), Handler).serve_forever()
+    ap = argparse.ArgumentParser(description="Trap visualizer server")
+    ap.add_argument("--host", default="127.0.0.1", help="bind address (0.0.0.0 = all interfaces)")
+    ap.add_argument("--port", type=int, default=8000)
+    a = ap.parse_args()
+    print(f"Trap visualizer on http://{a.host}:{a.port}")
+    http.server.ThreadingHTTPServer((a.host, a.port), Handler).serve_forever()

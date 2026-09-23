@@ -1415,6 +1415,7 @@ const yieldToPage = () => new Promise(r => { const c = new MessageChannel(); c.p
 $('#rCancel').onclick = () => renderCancel = true;
 $('#rGo').onclick = async () => {
   if (!srcUrl) return status('Load a song first');
+  if (!isSecureContext) return status('Rendering needs HTTPS or localhost (browsers hide WebCodecs on plain http)');
   if (!('VideoEncoder' in window)) return status('This browser can\'t encode video (needs WebCodecs: Chrome, Edge or Firefox 130+)');
   const [w, h] = renderDims(), fps = +$('#rFps').value;
   const bitrate = Math.round(w * h * fps * +$('#rQ').value);
