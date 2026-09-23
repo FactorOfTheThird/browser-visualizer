@@ -2,6 +2,10 @@
 
 A Trap Nation-style audio visualizer that runs in the browser. Load a song from a file, YouTube or SoundCloud, pick a logo, background and colors, mark the drops, then render an MP4.
 
+**Try it:** https://factorofthethird.github.io/browser-visualizer/
+
+The hosted version works with audio files from your computer, including MP4 rendering. YouTube and SoundCloud links need the self-hosted server below.
+
 ## Requirements
 
 - Python 3.7+

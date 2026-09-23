@@ -475,6 +475,7 @@ $('#ytLoad').onclick = async () => {
   status('Downloading audio…');
   try {
     const r = await fetch('/yt?url=' + encodeURIComponent(url));
+    if (r.status === 404) return status('Links need the self-hosted server (see the README) — load an audio file instead');
     if (!r.ok) return status(`Failed (${r.status}): ${r.statusText}`);
     const h = k => decodeURIComponent(r.headers.get(k) || '');
     setSource(URL.createObjectURL(await r.blob()), h('X-Title'), h('X-Track'), h('X-Artist'));
