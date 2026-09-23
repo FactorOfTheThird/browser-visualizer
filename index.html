@@ -144,10 +144,14 @@
 
     <details><summary>Logo, background &amp; colors</summary>
       <div class="flex">
-        <button type="button" onclick="logoFile.click()">Logo…</button><input id="logoFile" type="file" accept="image/*" hidden>
+        <button type="button" onclick="logoFile.click()" title="Image, GIF or short video (loops)">Logo…</button><input id="logoFile" type="file" accept="image/*,video/*" hidden>
+        <button type="button" id="logoClear">Default logo</button>
+      </div>
+      <div class="flex">
         <button type="button" onclick="bgFile.click()">Background…</button><input id="bgFile" type="file" accept="image/*" hidden>
         <button type="button" id="bgClear">No background</button>
       </div>
+      <div id="logoOpts"></div>
       <div class="sub">Layer colors (front → back)</div>
       <div id="colors"></div>
     </details>
@@ -160,7 +164,6 @@
       <div class="flex"><input id="pName" type="text" placeholder="Preset name"><button id="pSave">Save</button></div>
       <div class="flex">
         <button id="pExport">Export…</button><button id="pImport">Import…</button><input id="pFile" type="file" accept=".json,application/json" hidden>
-        <label style="display:flex;gap:5px;align-items:center;margin-left:auto" title="Include the logo and background images"><input id="pImg" type="checkbox" checked>with images</label>
       </div>
     </details>
 
@@ -216,6 +219,8 @@ const P = [
   ['spread',  'Layer spread',  0,   0.2,   0.005,0.09, 'Ring'],
   ['glow',    'Glow',          0,   60,    1,    9 ,   'Ring'],
   ['rot',     'Rotation °',    0,   360,   1,    0,    'Ring'],
+  ['inStyle', 'Style',         0,   4,     1,    0,    'Intro', ['Off', 'Zoom', 'Spin', 'Pop', 'Spiral']],
+  ['inLen',   'Duration s',    0.2, 4,     0.05, 1.2,  'Intro'],
   ['bassHz',  'Bass range Hz', 40,  250,   1,    68 ,  'Bass reaction'],
   ['thresh',  'Bass threshold',0,   0.95,  0.01, 0.51,  'Bass reaction'],
   ['pulse',   'Logo pulse',    0,   0.4,   0.005,0.1,  'Bass reaction'],
@@ -276,6 +281,7 @@ const P = [
   ['ovAlpha', 'Opacity',       0,   1,     0.01, 0.9,  'Song overlay'],
   ['bgDim',   'Bg darken',     0,   1,     0.01, 0.56, 'Background'],
   ['bgBlur',  'Bg blur',       0,   40,    1,    4,    'Background'],
+  ['logoOnce','Animated logo', 0,   1,     1,    0,    'Logo', ['Loop', 'Play once']],
 ];
 const DEFAULT_COLORS = ['#ffffff', '#fff200', '#ff9d00', '#ff1e3c', '#e0147a', '#8a2be2', '#1e6bff', '#00e5ff', '#2bff88', '#ff5ef2'];
 
@@ -301,7 +307,7 @@ function onParam(k) {
   if (k === 'pCount') resizeParticles();
 }
 // inputs[key] = setter that shows a value in that control (used by presets)
-const groups = {}, inputs = {};
+const groups = { Logo: $('#logoOpts') }, inputs = {};
 for (const [k, label, min, max, step, def, g, opts] of P) {
   params[k] = saved[k] ?? def;
   const box = groups[g] ??= $('#params').appendChild(Object.assign(document.createElement('details'), { innerHTML: `<summary>${g}</summary>` }));
@@ -339,6 +345,11 @@ function buildColors() {
 buildColors();
 groups['Drop effects'].insertAdjacentHTML('beforeend',
   '<div class="flex"><button id="edOpen">Edit drops…</button><button id="dropTest">Test drop (D)</button></div><output id="dropInfo" style="display:block;text-align:left"></output>');
+groups.Intro.insertAdjacentHTML('beforeend', '<div class="flex"><button id="inPreview">Preview intro</button></div>');
+$('#inPreview').onclick = () => { // also restarts an animated logo, to see "Play once" with the intro
+  introStart = logoStart = performance.now() / 1000;
+  if (logo instanceof HTMLVideoElement) logo.currentTime = 0;
+  if (!params.inStyle) status('Pick an intro style first'); };
 const status = t => $('#status').textContent = t;
 
 // sections remember whether you left them open or closed
@@ -501,14 +512,52 @@ function shrink(img, max, type) {
   c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
   return c.toDataURL(type, 0.9);
 }
+// logo: an <img>, a looping muted <video>, or { frames: [{ img, end (ms) }], dur } for animated GIF/APNG/WebP
+async function loadLogo(blob) {
+  const url = URL.createObjectURL(blob);
+  if (blob.type.startsWith('video/')) {
+    const v = Object.assign(document.createElement('video'), { src: url, loop: true, muted: true, playsInline: true });
+    await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = rej; });
+    return v;
+  }
+  if (!blob.type.includes('svg') && window.ImageDecoder && await ImageDecoder.isTypeSupported(blob.type)) {
+    const dec = new ImageDecoder({ data: await blob.arrayBuffer(), type: blob.type });
+    await dec.tracks.ready; await dec.completed;
+    const n = dec.tracks.selectedTrack.frameCount, frames = [];
+    let end = 0;
+    for (let i = 0; n > 1 && i < n; i++) {
+      const { image } = await dec.decode({ frameIndex: i }), w = image.displayWidth, h = image.displayHeight, s = Math.min(1, 512 / Math.max(w, h));
+      end += (image.duration > 10000 ? image.duration : 100000) / 1000; // µs; ≤10 ms delays play at 100 ms, like browsers do
+      frames.push({ img: raster(image, w * s, h * s), end });
+      image.close();
+    }
+    dec.close();
+    if (n > 1) return { frames, dur: end };
+  }
+  return loadImg(url);
+}
+// animated logos are too big for localStorage: the file goes to browser storage (OPFS), 'opfs:<type>' marks it
+const opfsDir = () => navigator.storage?.getDirectory?.().catch(() => null);
 let logo, bgImg;
-loadImg(lsGet('tnvLogo') || DEFAULT_LOGO).then(i => logo = i);
+(async () => {
+  const s = lsGet('tnvLogo'), f = s?.startsWith('opfs:') && await (await opfsDir())?.getFileHandle('logo').then(h => h.getFile()).catch(() => null);
+  logo = f ? await loadLogo(new Blob([f], { type: s.slice(5) })).catch(() => null) : null;
+  logo ||= await loadImg(s && !f ? s : DEFAULT_LOGO);
+})();
 if (lsGet('tnvBg')) loadImg(lsGet('tnvBg')).then(i => { bgImg = i; renderBg(); });
 $('#logoFile').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
-  logo = await loadImg(URL.createObjectURL(f));
-  lsSet('tnvLogo', shrink(logo, 1024, 'image/png'));
+  e.target.value = '';
+  const l = await loadLogo(f).catch(() => null);
+  if (!l) return status('Couldn\'t load that file as a logo');
+  logo?.pause?.(); logo = l;
+  if (l instanceof HTMLImageElement) return lsSet('tnvLogo', shrink(l, 1024, 'image/png'));
+  const w = await (await opfsDir())?.getFileHandle('logo', { create: true }).then(h => h.createWritable()).catch(() => null);
+  if (!w) return lsSet('tnvLogo', null), status('Animated logo won\'t be remembered after reload (no browser storage)');
+  await w.write(f); await w.close();
+  lsSet('tnvLogo', 'opfs:' + f.type);
 };
+$('#logoClear').onclick = async () => { logo?.pause?.(); logo = await loadImg(DEFAULT_LOGO); lsSet('tnvLogo', null); };
 $('#bgFile').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
   bgImg = await loadImg(URL.createObjectURL(f)); renderBg();
@@ -517,13 +566,11 @@ $('#bgFile').onchange = async e => {
 $('#bgClear').onclick = () => { bgImg = null; renderBg(); lsSet('tnvBg', null); };
 
 // ---------- Presets ----------
-// A preset is the look: every slider, the layer colors and (optionally) the logo + background images.
-// Saved in this browser by name, or exported / imported as a .json file to share. Imported files are
-// untrusted: only known sliders (clamped to their range), #rrggbb colors and data:image/ URLs are used.
-function currentPreset(withImages) {
-  const pr = { app: 'trap-visualizer', version: 1, params: Object.fromEntries(P.map(([k]) => [k, params[k]])), colors: [...params.colors] };
-  if (withImages) pr.images = { logo: lsGet('tnvLogo') || null, bg: lsGet('tnvBg') || null };
-  return pr;
+// A preset is the look: every slider and the layer colors. Logo and background stay the user's own (images
+// in older presets are ignored). Saved in this browser by name, or exported / imported as a .json file to
+// share. Imported files are untrusted: only known sliders (clamped to their range) and #rrggbb colors are used.
+function currentPreset() {
+  return { app: 'trap-visualizer', version: 1, params: Object.fromEntries(P.map(([k]) => [k, params[k]])), colors: [...params.colors] };
 }
 async function applyPreset(pr) {
   for (const [k, , min, max] of P) {
@@ -535,12 +582,6 @@ async function applyPreset(pr) {
   if (Array.isArray(pr.colors))
     params.colors = pr.colors.filter(c => /^#[0-9a-f]{6}$/i.test(c)).concat(DEFAULT_COLORS).slice(0, DEFAULT_COLORS.length);
   buildColors(); resizeParticles(); save();
-  if (pr.images) {
-    const img = s => typeof s === 'string' && s.startsWith('data:image/') ? s : null;
-    const l = img(pr.images.logo), b = img(pr.images.bg);
-    logo = await loadImg(l || DEFAULT_LOGO); lsSet('tnvLogo', l);
-    bgImg = b ? await loadImg(b) : null; lsSet('tnvBg', b);
-  }
   renderBg();
 }
 const presetStore = () => { try { return JSON.parse(lsGet('tnvPresets')) || {}; } catch { return {}; } };
@@ -554,7 +595,7 @@ function storePreset(name, pr) {
   const all = presetStore();
   all[name] = pr;
   try { localStorage.setItem('tnvPresets', JSON.stringify(all)); listPresets(name); return true; }
-  catch { status('Not enough browser storage for this preset — untick "images" or use Export instead'); return false; }
+  catch { status('Not enough browser storage for this preset — use Export instead'); return false; }
 }
 listPresets();
 $('#pSel').onchange = async e => {
@@ -565,7 +606,7 @@ $('#pSel').onchange = async e => {
 $('#pSave').onclick = () => {
   const name = $('#pName').value.trim();
   if (!name) { status('Type a name for the preset first'); return $('#pName').focus(); }
-  if (storePreset(name, currentPreset($('#pImg').checked))) status(`Saved preset "${name}"`);
+  if (storePreset(name, currentPreset())) status(`Saved preset "${name}"`);
 };
 $('#pName').onkeydown = e => e.key === 'Enter' && $('#pSave').click();
 confirmClick($('#pDel'), () => {
@@ -577,7 +618,7 @@ confirmClick($('#pDel'), () => {
 $('#pExport').onclick = () => {
   const name = $('#pSel').value || 'my-look';
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([JSON.stringify(currentPreset($('#pImg').checked), null, 1)], { type: 'application/json' }));
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(currentPreset(), null, 1)], { type: 'application/json' }));
   a.download = name.replace(/[\\/:*?"<>|]/g, '') + '.trapviz.json';
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
@@ -1081,14 +1122,24 @@ function windStrips(cx, cy, D, spread, kick, dt, t, burst) {
   }
 }
 
-let logoOf = null, logoUV = [0, 0, 1, 1];
-function syncLogo() { // rasterised through a 2D canvas so SVG logos work in every browser
-  if (!logo || logo === logoOf) return;
-  logoOf = logo;
-  const iw = logo.naturalWidth || 512, ih = logo.naturalHeight || 512, s = 1024 / Math.max(iw, ih), [c, cg] = mk();
-  c.width = Math.max(1, Math.round(iw * s)); c.height = Math.max(1, Math.round(ih * s));
-  cg.drawImage(logo, 0, 0, c.width, c.height);
-  upload(logoTex, c, true);
+let logoOf = null, logoUV = [0, 0, 1, 1], logoCur, logoStart = 0;
+function raster(src, w, h) {
+  const [c, cg] = mk();
+  c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h));
+  cg.drawImage(src, 0, 0, c.width, c.height);
+  return c;
+}
+function syncLogo(t) {
+  if (logo !== logoCur) { logoCur = logo; logoStart = t; } // live: animations run from when the logo was picked
+  const once = params.logoOnce, ms = (rendering ? t : t - logoStart) * 1000;
+  const src = logo?.frames ? logo.frames.find(f => (once ? Math.min(ms, logo.dur - 1) : ms % logo.dur) < f.end).img : logo, vid = src instanceof HTMLVideoElement;
+  if (vid) src.loop = !once; // play once: an ended video stays on its last frame
+  if (vid && src.paused && !rendering && !(once && src.ended)) src.play().catch(() => {}); // (re)start: browsers pause hidden videos
+  if (!src || (src === logoOf && !vid) || (vid && src.readyState < 2)) return;
+  logoOf = src;
+  const iw = src.videoWidth || src.naturalWidth || src.width || 512, ih = src.videoHeight || src.naturalHeight || src.height || 512;
+  // images are rasterised through a 2D canvas so SVG logos work in every browser
+  upload(logoTex, src instanceof HTMLImageElement ? raster(src, iw * 1024 / Math.max(iw, ih), ih * 1024 / Math.max(iw, ih)) : src, true);
   const fx = Math.min(1, ih / iw), fy = Math.min(1, iw / ih); // "cover": crop the long side
   logoUV = [(1 - fx) / 2, (1 - fy) / 2, fx, fy];
 }
@@ -1134,6 +1185,19 @@ function glitchUniforms(U, dt, kick) {
   if (gSet.length) { gl.uniform4fv(U.uGRect, gRect); gl.uniform4fv(U.uGInfo, gInfo); }
 }
 
+// intro: the circle grows in from nothing at the start of a render (and on "Preview intro") → [scale, extra rotation]
+let introStart = -Infinity;
+function intro(t) {
+  const p = clamp(t / params.inLen), e = 1 - (1 - p) ** 3, c = 2.2;
+  switch (params.inStyle) {
+    case 1: return [e, 0];                                             // zoom
+    case 2: return [e, (e - 1) * Math.PI];                             // zoom + half turn
+    case 3: return [1 + (c + 1) * (p - 1) ** 3 + c * (p - 1) ** 2, 0]; // pop: overshoots, settles
+    case 4: return [1 - (1 - p) ** 4, (e - 1) * 4 * Math.PI];          // spiral: two turns
+  }
+  return [1, 0];
+}
+
 let last = performance.now(), camAngle = 0, tiltSign = 1, kickOn = false;
 // live view: driven by the display's frame rate; the offline render calls renderFrame itself
 function frame(now) {
@@ -1155,9 +1219,12 @@ function renderFrame(dt, t) {
   camAngle += (target - camAngle) * (1 - Math.pow(1 - params.camEase, dt * 60));
 
   const sh = (params.shake * kick * kick + params.dShake * env) * u, zoom = 1 + env * params.dZoom;
-  const co = Math.cos(camAngle) * zoom, si = Math.sin(camAngle) * zoom;
   const tx = cx + (Math.random() * 2 - 1) * sh, ty = cy + (Math.random() * 2 - 1) * sh;
-  const cam = mat(co, si, -si, co, tx - co * cx + si * cy, ty - si * cx - co * cy); // shake, rotate, zoom about the center
+  const camAt = a => { // shake, rotate, zoom about the center
+    const co = Math.cos(a) * zoom, si = Math.sin(a) * zoom;
+    return mat(co, si, -si, co, tx - co * cx + si * cy, ty - si * cx - co * cy);
+  };
+  const [is, ia] = intro(rendering ? t : t - introStart), cam = camAt(camAngle), ringCam = ia ? camAt(camAngle + ia) : cam;
 
   // particles: fly outward from center (starfield projection) → instances (x, y, size, alpha)
   const spread = Math.max(W, H) * 0.5, speed = params.pSpeed * (1 + kick * params.pBoost) * burst * 0.18 * dt;
@@ -1176,7 +1243,7 @@ function renderFrame(dt, t) {
   gi = 0;
   windStrips(cx, cy, D, spread, kick, dt, t, burst);
   const windN = gi / 3, layers = [];
-  const scale = 1 + kick * params.pulse, R = params.radius * u * scale, Hh = params.height * u * (1 + env * params.dRing);
+  const scale = (1 + kick * params.pulse) * is, R = params.radius * u * scale, Hh = params.height * u * (1 + env * params.dRing) * is;
   for (let L = params.layers - 1; L >= 0; L--) {
     const arr = hist[Math.min(hist.length - 1, L * params.delay)];
     if (!arr) continue;
@@ -1186,12 +1253,12 @@ function renderFrame(dt, t) {
   }
   gl.bindBuffer(gl.ARRAY_BUFFER, geoBuf); gl.bufferData(gl.ARRAY_BUFFER, geo.subarray(0, gi), gl.STREAM_DRAW);
   gl.bindBuffer(gl.ARRAY_BUFFER, instBuf); gl.bufferData(gl.ARRAY_BUFFER, inst.subarray(0, np), gl.STREAM_DRAW);
-  const flat = (mode, first, count, color = [1, 1, 1]) => {
+  const flat = (mode, first, count, color = [1, 1, 1], m = cam) => {
     const U = use(pFlat);
-    gl.uniformMatrix3fv(U.uM, false, cam); gl.uniform3fv(U.uC, color);
+    gl.uniformMatrix3fv(U.uM, false, m); gl.uniform3fv(U.uC, color);
     gl.bindVertexArray(vGeo); gl.drawArrays(mode, first, count);
   };
-  const drawLayers = () => { for (const [c, s, n] of layers) flat(gl.TRIANGLE_FAN, s, n, c); };
+  const drawLayers = () => { for (const [c, s, n] of layers) flat(gl.TRIANGLE_FAN, s, n, c, ringCam); };
 
   gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
   // ring glow: the layers at 1/4 size, blurred there (1/16 of the pixels), stretched back up under the sharp layers
@@ -1215,8 +1282,8 @@ function renderFrame(dt, t) {
   if (windN) flat(gl.TRIANGLES, 0, windN);
   if (glow) image(glowA, mat(1, 0, 0, 1, 0, 0), 0, 0, W, H, 2, [0, 1, 1, -1]); // render targets are stored bottom-up
   drawLayers();
-  syncLogo();
-  image(logoTex, cam, cx - R, cy - R, 2 * R, 2 * R, 1, logoUV, 1 / (2 * R)); // logo on black, clipped to the circle
+  syncLogo(t);
+  if (R > 0) image(logoTex, ringCam, cx - R, cy - R, 2 * R, 2 * R, 1, logoUV, 1 / (2 * R)); // logo on black, clipped to the circle
   gl.disable(gl.BLEND);
   gl.bindFramebuffer(gl.READ_FRAMEBUFFER, msFbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, sceneFbo); // resolve the MSAA
   gl.blitFramebuffer(0, 0, W, H, 0, 0, W, H, gl.COLOR_BUFFER_BIT, gl.NEAREST);
@@ -1383,10 +1450,14 @@ async function renderVideo({ w, h, fps, bitrate, file, name }) {
   rendering = true; renderCancel = false;
   document.body.classList.add('rendering'); $('#rPanel').hidden = false;
   setSize(w, h); resetScene();
+  const vlogo = logo instanceof HTMLVideoElement && logo; // video logos are seeked to each frame's time
+  vlogo?.pause?.();
   const start = performance.now();
   try {
     for (let i = 0; i < frames && !renderCancel && !encErr; i++) {
       T = i / fps; an.pos = Math.round(T * sr);
+      // ponytail: a seek per frame is slow for long / sparse-keyframe videos; pre-decode frames if that bites
+      if (vlogo && vlogo === logo) await new Promise(r => { vlogo.addEventListener('seeked', r, { once: true }); vlogo.currentTime = params.logoOnce ? Math.min(T, vlogo.duration - 0.01) : T % vlogo.duration; });
       renderFrame(1 / fps, T);
       const vf = new VideoFrame(cv, { timestamp: Math.round(i * 1e6 / fps), duration: Math.round(1e6 / fps) });
       venc.encode(vf, { keyFrame: i % (fps * 2) === 0 });
