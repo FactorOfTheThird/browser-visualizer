@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 512 512">
+  <!-- Original sample logo for Trap Visualizer (MIT, same as the project): neon sakura emblem -->
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="60%">
+      <stop offset="0" stop-color="#2a0b18"/>
+      <stop offset="0.65" stop-color="#0d0509"/>
+      <stop offset="1" stop-color="#000"/>
+    </radialGradient>
+    <linearGradient id="petal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#ffc2d4"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <!-- one notched petal, pointing up from the center -->
+    <path id="p" d="M256 250 C 214 214, 204 150, 236 104 L 256 124 L 276 104 C 308 150, 298 214, 256 250 Z"/>
+  </defs>
+
+  <rect width="512" height="512" fill="url(#bg)"/>
+
+  <!-- rings -->
+  <circle cx="256" cy="256" r="226" fill="none" stroke="#fff" stroke-width="7"/>
+  <circle cx="256" cy="256" r="204" fill="none" stroke="#ff3b5c" stroke-width="3.5" filter="url(#glow)"/>
+
+  <!-- blossom -->
+  <g filter="url(#glow)">
+    <g fill="url(#petal)" stroke="#ff3b5c" stroke-width="3">
+      <use href="#p"/>
+      <use href="#p" transform="rotate(72 256 256)"/>
+      <use href="#p" transform="rotate(144 256 256)"/>
+      <use href="#p" transform="rotate(216 256 256)"/>
+      <use href="#p" transform="rotate(288 256 256)"/>
+    </g>
+    <!-- stamens -->
+    <g stroke="#ff3b5c" stroke-width="3" stroke-linecap="round">
+      <line x1="256" y1="256" x2="256" y2="210"/>
+      <line x1="256" y1="256" x2="300" y2="242"/>
+      <line x1="256" y1="256" x2="283" y2="293"/>
+      <line x1="256" y1="256" x2="229" y2="293"/>
+      <line x1="256" y1="256" x2="212" y2="242"/>
+    </g>
+    <circle cx="256" cy="256" r="16" fill="#ff3b5c"/>
+    <circle cx="256" cy="256" r="7" fill="#fff"/>
+  </g>
+</svg>

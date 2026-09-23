@@ -601,9 +601,12 @@ function drawCover(g, img, x, y, w, h) {
 const cv = $('#c'), out = cv.getContext('2d');
 const mk = () => { const c = document.createElement('canvas'); return [c, c.getContext('2d')]; };
 const [sc, g] = mk(), [bg, bgg] = mk(), [tmp, tg] = mk();
+const [gw, gwg] = mk(), [gb, gbg] = mk(); // ring glow, drawn at 1/4 size (see drawGlow)
 let W, H, u, rendering = false;
 function setSize(w, h) {
+  w = Math.max(1, w); h = Math.max(1, h); // a hidden/minimised window reports 0×0, and 0-size canvases can't be drawn
   W = cv.width = sc.width = bg.width = tmp.width = w;
+  gw.width = gb.width = Math.max(1, Math.ceil(w / 4)); gw.height = gb.height = Math.max(1, Math.ceil(h / 4));
   H = cv.height = sc.height = bg.height = tmp.height = h;
   u = Math.min(W, H) / 1080;
   renderBg();
@@ -884,7 +887,22 @@ function impactFrame(st) {
 $('#dropTest').onclick = testDrop;
 
 // ---------- Drawing ----------
-function ringPath(arr, cx, cy, R, Hh) {
+// Ring glow: the layers are drawn at 1/4 size, blurred there (1/16 of the pixels) and stretched back up under
+// the sharp layers. Much cheaper than a per-layer shadowBlur, which Firefox renders slowly.
+function drawGlow(drawLayers) {
+  const m = g.getTransform(), k = gw.width / W;
+  gwg.setTransform(1, 0, 0, 1, 0, 0); gwg.clearRect(0, 0, gw.width, gw.height);
+  gwg.setTransform(m.a * k, m.b * k, m.c * k, m.d * k, m.e * k, m.f * k); // same camera, scaled down
+  drawLayers(gwg);
+  gbg.clearRect(0, 0, gb.width, gb.height);
+  gbg.filter = `blur(${params.glow * u * k / 2}px)`; // shadowBlur s ≈ Gaussian sigma s/2
+  gbg.drawImage(gw, 0, 0); gbg.drawImage(gw, 0, 0); // twice: the old per-layer shadows stacked (closest match measured)
+  gbg.filter = 'none';
+  g.save(); g.setTransform(1, 0, 0, 1, 0, 0);
+  g.drawImage(gb, 0, 0, W, H);
+  g.restore();
+}
+function ringPath(c, arr, cx, cy, R, Hh) {
   const n = arr.length, rot = params.rot * Math.PI / 180, pts = [];
   const add = (a, v) => { const r = R + params.base * u + v * Hh; pts.push(cx + r * Math.sin(a + rot), cy - r * Math.cos(a + rot)); };
   if (params.mirror) {
@@ -893,10 +911,10 @@ function ringPath(arr, cx, cy, R, Hh) {
   } else for (let i = 0; i < n; i++) add((i + 0.5) / n * Math.PI * 2, arr[i]);
   // closed smooth curve through midpoints
   const m = pts.length / 2, X = i => pts[(i % m) * 2], Y = i => pts[(i % m) * 2 + 1];
-  g.beginPath();
-  g.moveTo((X(0) + X(1)) / 2, (Y(0) + Y(1)) / 2);
-  for (let i = 1; i <= m; i++) g.quadraticCurveTo(X(i), Y(i), (X(i) + X(i + 1)) / 2, (Y(i) + Y(i + 1)) / 2);
-  g.closePath();
+  c.beginPath();
+  c.moveTo((X(0) + X(1)) / 2, (Y(0) + Y(1)) / 2);
+  for (let i = 1; i <= m; i++) c.quadraticCurveTo(X(i), Y(i), (X(i) + X(i + 1)) / 2, (Y(i) + Y(i + 1)) / 2);
+  c.closePath();
 }
 
 // same starfield projection as the particles: head at depth z, tail further back at z + Length
@@ -1025,15 +1043,17 @@ function renderFrame(dt, t) {
 
   // spectrum layers, back (most delayed) to front
   const scale = 1 + kick * params.pulse, R = params.radius * u * scale, Hh = params.height * u * (1 + env * params.dRing);
-  g.shadowBlur = params.glow * u;
-  for (let L = params.layers - 1; L >= 0; L--) {
-    const arr = hist[Math.min(hist.length - 1, L * params.delay)];
-    if (!arr) continue;
-    g.fillStyle = g.shadowColor = params.colors[L] || '#fff';
-    ringPath(arr, cx, cy, R, Hh * (1 + L * params.spread));
-    g.fill();
-  }
-  g.shadowBlur = 0;
+  const drawLayers = c => {
+    for (let L = params.layers - 1; L >= 0; L--) {
+      const arr = hist[Math.min(hist.length - 1, L * params.delay)];
+      if (!arr) continue;
+      c.fillStyle = params.colors[L] || '#fff';
+      ringPath(c, arr, cx, cy, R, Hh * (1 + L * params.spread));
+      c.fill();
+    }
+  };
+  if (params.glow > 0) drawGlow(drawLayers);
+  drawLayers(g);
 
   // logo clipped to circle
   g.save();
