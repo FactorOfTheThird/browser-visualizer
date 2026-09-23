@@ -153,6 +153,7 @@
       </div>
       <div id="logoOpts"></div>
       <div class="sub">Layer colors (front → back)</div>
+      <div class="flex"><select id="palette" aria-label="Color palette"><option value="">Palette…</option></select></div>
       <div id="colors"></div>
     </details>
 
@@ -221,6 +222,7 @@ const P = [
   ['rot',     'Rotation °',    0,   360,   1,    0,    'Ring'],
   ['inStyle', 'Style',         0,   4,     1,    0,    'Intro', ['Off', 'Zoom', 'Spin', 'Pop', 'Spiral']],
   ['inLen',   'Duration s',    0.2, 4,     0.05, 1.2,  'Intro'],
+  ['inFade',  'Scene fade in s',0,  6,     0.1,  0,    'Intro'],
   ['bassHz',  'Bass range Hz', 40,  250,   1,    68 ,  'Bass reaction'],
   ['thresh',  'Bass threshold',0,   0.95,  0.01, 0.51,  'Bass reaction'],
   ['pulse',   'Logo pulse',    0,   0.4,   0.005,0.1,  'Bass reaction'],
@@ -343,13 +345,38 @@ function buildColors() {
   }
 }
 buildColors();
+// palettes set the layer colors (front → back) and the layer count in one go
+const PALETTES = {
+  'Classic':   DEFAULT_COLORS.slice(0, 6),
+  'Rainbow':   DEFAULT_COLORS,
+  'Fire':      ['#ffffff', '#ffe066', '#ffa31a', '#ff5a1f', '#e0201b', '#8b0000'],
+  'Ice':       ['#ffffff', '#c9f6ff', '#7fe3ff', '#33b5ff', '#1e6bff', '#3a2bd9'],
+  'Neon':      ['#ffffff', '#00fff0', '#00ff88', '#fff200', '#ff2bd6', '#8a2be2'],
+  'Sunset':    ['#fff4e0', '#ffd166', '#ff9f68', '#ff5e7e', '#c2398f', '#5b2a86'],
+  'Vaporwave': ['#ffffff', '#ff71ce', '#01cdfe', '#05ffa1', '#b967ff'],
+  'Toxic':     ['#ffffff', '#ccff00', '#66ff33', '#00cc66', '#008844', '#004422'],
+  'Blood':     ['#ffffff', '#ff4d4d', '#e60000', '#b30000', '#800000', '#4d0000'],
+  'Sakura':    ['#ffffff', '#ffd6e7', '#ffadd2', '#ff85c0', '#f759ab', '#c41d7f'],
+  'Mono':      ['#ffffff', '#d9d9d9', '#b3b3b3', '#8c8c8c', '#666666', '#404040'],
+  'Duo':       ['#ffffff', '#ff1e3c'],
+  'Minimal':   ['#ffffff'],
+};
+for (const n in PALETTES) $('#palette').add(new Option(`${n} (${PALETTES[n].length})`, n));
+$('#palette').onchange = e => {
+  const pal = PALETTES[e.target.value];
+  e.target.value = '';
+  if (!pal) return;
+  params.colors = pal.concat(params.colors.slice(pal.length)); // extra layers added later keep their old colors
+  params.layers = pal.length; inputs.layers(pal.length);
+  buildColors(); save();
+};
 groups['Drop effects'].insertAdjacentHTML('beforeend',
   '<div class="flex"><button id="edOpen">Edit drops…</button><button id="dropTest">Test drop (D)</button></div><output id="dropInfo" style="display:block;text-align:left"></output>');
 groups.Intro.insertAdjacentHTML('beforeend', '<div class="flex"><button id="inPreview">Preview intro</button></div>');
 $('#inPreview').onclick = () => { // also restarts an animated logo, to see "Play once" with the intro
   introStart = logoStart = performance.now() / 1000;
   if (logo instanceof HTMLVideoElement) logo.currentTime = 0;
-  if (!params.inStyle) status('Pick an intro style first'); };
+  if (!params.inStyle && !params.inFade) status('Pick an intro style or a fade first'); };
 const status = t => $('#status').textContent = t;
 
 // sections remember whether you left them open or closed
@@ -680,19 +707,20 @@ const V_FULL = 'void main() { gl_Position = vec4(vec2(gl_VertexID & 1, gl_Vertex
 const pImage = program(V_CLIP + `
 layout(location = 0) in vec2 aQ; uniform vec4 uRect; out vec2 vQ;
 void main() { vQ = aQ; gl_Position = clip(uRect.xy + aQ * uRect.zw); }`, `
-in vec2 vQ; uniform sampler2D uT; uniform vec4 uUV; uniform int uMode; uniform float uEdge; out vec4 o;
+in vec2 vQ; uniform sampler2D uT; uniform vec4 uUV; uniform int uMode; uniform float uEdge, uA; out vec4 o;
 void main() {
   vec4 c = texture(uT, uUV.xy + vQ * uUV.zw);
   if (uMode == 1) o = vec4(c.rgb, 1.) * clamp((.5 - length(vQ - .5)) / uEdge + .5, 0., 1.);
   else if (uMode == 2) o = c * (2. - c.a); // the blurred layers drawn twice, source-over
   else o = c;
+  o *= uA;
 }`);
 // solid triangles with per-vertex alpha: ring layers and wind lines
 const pFlat = program(V_CLIP + `
 layout(location = 0) in vec2 aP; layout(location = 1) in float aA; out float vA;
 void main() { vA = aA; gl_Position = clip(aP); }`, `
-in float vA; uniform vec3 uC; out vec4 o;
-void main() { o = vec4(uC, 1.) * vA; }`);
+in float vA; uniform vec3 uC; uniform float uA; out vec4 o;
+void main() { o = vec4(uC, 1.) * vA * uA; }`);
 // particles: one instanced soft dot each (x, y, size, alpha)
 const pPart = program(V_CLIP + `
 layout(location = 0) in vec2 aQ; layout(location = 1) in vec4 aI; out vec2 vR; out float vA;
@@ -1143,10 +1171,10 @@ function syncLogo(t) {
   const fx = Math.min(1, ih / iw), fy = Math.min(1, iw / ih); // "cover": crop the long side
   logoUV = [(1 - fx) / 2, (1 - fy) / 2, fx, fy];
 }
-function image(t, m, x, y, w, h, mode = 0, uv = [0, 0, 1, 1], edge = 1) {
+function image(t, m, x, y, w, h, mode = 0, uv = [0, 0, 1, 1], edge = 1, alpha = 1) {
   const U = use(pImage);
   gl.uniformMatrix3fv(U.uM, false, m); gl.uniform4f(U.uRect, x, y, w, h); gl.uniform4fv(U.uUV, uv);
-  gl.uniform1i(U.uMode, mode); gl.uniform1f(U.uEdge, edge);
+  gl.uniform1i(U.uMode, mode); gl.uniform1f(U.uEdge, edge); gl.uniform1f(U.uA, alpha);
   gl.bindTexture(gl.TEXTURE_2D, t); gl.bindVertexArray(vQuad); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 }
 function blur(src, dst, dx, dy) { // shadowBlur s ≈ Gaussian sigma s/2, at 1/4 size
@@ -1224,7 +1252,8 @@ function renderFrame(dt, t) {
     const co = Math.cos(a) * zoom, si = Math.sin(a) * zoom;
     return mat(co, si, -si, co, tx - co * cx + si * cy, ty - si * cx - co * cy);
   };
-  const [is, ia] = intro(rendering ? t : t - introStart), cam = camAt(camAngle), ringCam = ia ? camAt(camAngle + ia) : cam;
+  const it = rendering ? t : t - introStart, fade = params.inFade ? clamp(it / params.inFade) : 1; // background, particles, wind
+  const [is, ia] = intro(it), cam = camAt(camAngle), ringCam = ia ? camAt(camAngle + ia) : cam;
 
   // particles: fly outward from center (starfield projection) → instances (x, y, size, alpha)
   const spread = Math.max(W, H) * 0.5, speed = params.pSpeed * (1 + kick * params.pBoost) * burst * 0.18 * dt;
@@ -1235,7 +1264,7 @@ function renderFrame(dt, t) {
     const px = cx + p.x / p.z * spread * 0.35, py = cy + p.y / p.z * spread * 0.35;
     if (p.z <= 0.02 || Math.hypot(px - cx, py - cy) > D + 50) { Object.assign(p, newParticle(false)); continue; }
     inst[np++] = px; inst[np++] = py; inst[np++] = params.pSize * u * p.s * (1.2 / p.z + 1) * 2;
-    inst[np++] = params.pAlpha * clamp((1 - p.z) * 2.5);
+    inst[np++] = params.pAlpha * clamp((1 - p.z) * 2.5) * fade;
   }
 
   // wind strips, then the spectrum layers back (most delayed) to front, into one vertex buffer
@@ -1253,9 +1282,9 @@ function renderFrame(dt, t) {
   }
   gl.bindBuffer(gl.ARRAY_BUFFER, geoBuf); gl.bufferData(gl.ARRAY_BUFFER, geo.subarray(0, gi), gl.STREAM_DRAW);
   gl.bindBuffer(gl.ARRAY_BUFFER, instBuf); gl.bufferData(gl.ARRAY_BUFFER, inst.subarray(0, np), gl.STREAM_DRAW);
-  const flat = (mode, first, count, color = [1, 1, 1], m = cam) => {
+  const flat = (mode, first, count, color = [1, 1, 1], m = cam, alpha = 1) => {
     const U = use(pFlat);
-    gl.uniformMatrix3fv(U.uM, false, m); gl.uniform3fv(U.uC, color);
+    gl.uniformMatrix3fv(U.uM, false, m); gl.uniform1f(U.uA, alpha); gl.uniform3fv(U.uC, color);
     gl.bindVertexArray(vGeo); gl.drawArrays(mode, first, count);
   };
   const drawLayers = () => { for (const [c, s, n] of layers) flat(gl.TRIANGLE_FAN, s, n, c, ringCam); };
@@ -1277,9 +1306,9 @@ function renderFrame(dt, t) {
   // background with bass zoom, overscanned so shake and rotation never show edges
   const ca = Math.abs(Math.cos(camAngle)), sa = Math.abs(Math.sin(camAngle));
   const bz = (1.03 + kick * params.bgZoom) * (ca + sa * Math.max(W / H, H / W));
-  image(bgTex, cam, cx - W * bz / 2, cy - H * bz / 2, W * bz, H * bz);
+  image(bgTex, cam, cx - W * bz / 2, cy - H * bz / 2, W * bz, H * bz, 0, undefined, 1, fade);
   if (np) { const U = use(pPart); gl.uniformMatrix3fv(U.uM, false, cam); gl.bindVertexArray(vPart); gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, np / 4); }
-  if (windN) flat(gl.TRIANGLES, 0, windN);
+  if (windN) flat(gl.TRIANGLES, 0, windN, undefined, cam, fade);
   if (glow) image(glowA, mat(1, 0, 0, 1, 0, 0), 0, 0, W, H, 2, [0, 1, 1, -1]); // render targets are stored bottom-up
   drawLayers();
   syncLogo(t);
@@ -1378,7 +1407,7 @@ $('#rGo').onclick = async () => {
   let file = null; // Chrome/Edge: pick the file up front and stream straight into it
   if (window.showSaveFilePicker) {
     try { file = await showSaveFilePicker({ suggestedName: name, types: [{ description: 'MP4 video', accept: { 'video/mp4': ['.mp4'] } }] }); }
-    catch { return; } // save dialog cancelled
+    catch (e) { if (e.name === 'AbortError') return; } // cancelled; any other refusal falls back to a download
   }
   try { await renderVideo({ w, h, fps, bitrate, file, name }); }
   catch (e) { status('Render failed: ' + e.message); console.error(e); }
@@ -1426,9 +1455,14 @@ async function renderVideo({ w, h, fps, bitrate, file, name }) {
     fastStart: writable ? false : 'in-memory',
   });
   let encErr = null;
-  const venc = new VideoEncoder({ output: (c, m) => muxer.addVideoChunk(c, m), error: e => encErr = e });
+  // Firefox's H.264 encoder emits B-frames, so chunks arrive in decode order (PTS 0, 2, 1, 4, 3…, shifted a frame):
+  // decode time = output order, the chunk's own timestamp = presentation time. Chrome: offset 0, no reordering.
+  let vOut = 0;
+  const venc = new VideoEncoder({ output: (c, m) => {
+    try { muxer.addVideoChunk(c, m, c.timestamp, c.timestamp - Math.round(vOut++ * 1e6 / fps)); } catch (e) { encErr = e; }
+  }, error: e => encErr = e });
   venc.configure(vcfg);
-  const aenc = new AudioEncoder({ output: (c, m) => muxer.addAudioChunk(c, m), error: e => encErr = e });
+  const aenc = new AudioEncoder({ output: (c, m) => { try { muxer.addAudioChunk(c, m); } catch (e) { encErr = e; } }, error: e => encErr = e });
   aenc.configure(acfg);
   let audioPos = 0;
   const feedAudio = upTo => { // encode song audio up to sample `upTo`, interleaved with the video frames
