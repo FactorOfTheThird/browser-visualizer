@@ -462,21 +462,27 @@ audio.addEventListener('loadedmetadata', () => {
 });
 for (const [id, k] of [['#ovTitle', 't'], ['#ovArtist', 'a']])
   $(id).oninput = e => { meta[k] = e.target.value; if (audio.duration) lsSet(metaKey(), JSON.stringify(meta)); };
-function drawOverlay() {
-  if (!params.ovOn || !(meta.t || meta.a)) return;
+// Drawn with Canvas2D only when the text or size changes, then shown as a texture (opacity is applied on the GPU).
+let ovKey = null;
+function updateOverlay() {
+  const on = !!(params.ovOn && (meta.t || meta.a));
+  const key = on ? [meta.t, meta.a, params.ovSize, params.ovMargin, W, H].join('\n') : '';
+  if (key === ovKey) return on;
+  ovKey = key;
+  if (!on) return false;
   const s = params.ovSize * u, m = params.ovMargin * u, x = W - m;
   let y = H - m;
-  out.save();
-  out.globalAlpha = params.ovAlpha;
-  out.textAlign = 'right';
-  out.shadowColor = 'rgba(0,0,0,.65)'; out.shadowBlur = 14 * u;
+  og.clearRect(0, 0, W, H);
+  og.textAlign = 'right';
+  og.shadowColor = 'rgba(0,0,0,.65)'; og.shadowBlur = 14 * u;
   if (meta.a) {
-    out.font = `300 ${s * 0.58}px "Segoe UI", system-ui, sans-serif`; out.fillStyle = 'rgba(255,255,255,.72)';
-    out.fillText(meta.a, x, y);
+    og.font = `300 ${s * 0.58}px "Segoe UI", system-ui, sans-serif`; og.fillStyle = 'rgba(255,255,255,.72)';
+    og.fillText(meta.a, x, y);
     y -= s * 0.58 * 1.3;
   }
-  if (meta.t) { out.font = `700 ${s}px "Segoe UI", system-ui, sans-serif`; out.fillStyle = '#fff'; out.fillText(meta.t, x, y); }
-  out.restore();
+  if (meta.t) { og.font = `700 ${s}px "Segoe UI", system-ui, sans-serif`; og.fillStyle = '#fff'; og.fillText(meta.t, x, y); }
+  upload(ovTex, ov);
+  return true;
 }
 
 // ---------- Images ----------
@@ -596,19 +602,155 @@ function drawCover(g, img, x, y, w, h) {
   g.drawImage(img, x - img.width * s / 2, y - img.height * s / 2, img.width * s, img.height * s);
 }
 
-// ---------- Canvas ----------
-// The scene is drawn to `sc`, then composited to the screen (with chromatic aberration if on).
-const cv = $('#c'), out = cv.getContext('2d');
+// ---------- Renderer (WebGL2) ----------
+// The scene (background, particles, wind, ring glow + layers, logo) is drawn into a 4× MSAA buffer and resolved to a
+// texture. One post shader then draws it to the screen with chromatic aberration, the title overlay, the drop flash,
+// the impact frame and the glitch slices. Every effect is a shader, so all browsers take the same GPU path
+// (the old Canvas2D filters and blend modes were slow in Firefox).
+// ponytail: no WebGL context-loss handling (GPU reset / driver crash) — the page needs a reload then.
+const cv = $('#c'), gl = cv.getContext('webgl2', { alpha: false, antialias: false, depth: false, powerPreference: 'high-performance' });
+if (!gl) { status('This browser doesn\'t support WebGL2, which the visualizer needs'); throw new Error('WebGL2 unavailable'); }
 const mk = () => { const c = document.createElement('canvas'); return [c, c.getContext('2d')]; };
-const [sc, g] = mk(), [bg, bgg] = mk(), [tmp, tg] = mk();
-const [gw, gwg] = mk(), [gb, gbg] = mk(); // ring glow, drawn at 1/4 size (see drawGlow)
-let W, H, u, rendering = false;
+const [bg, bgg] = mk(), [ov, og] = mk(); // background and title overlay: Canvas2D, redrawn only when they change
+
+function program(vs, fs) {
+  const p = gl.createProgram();
+  for (const [type, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, '#version 300 es\nprecision highp float;\n' + src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    gl.attachShader(p, s);
+  }
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {};
+  for (let i = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS); i--;) {
+    const n = gl.getActiveUniform(p, i).name.replace('[0]', '');
+    u[n] = gl.getUniformLocation(p, n);
+  }
+  return { p, u };
+}
+const use = pr => (gl.useProgram(pr.p), pr.u);
+// positions are canvas pixels (y down); uM maps them through the camera to clip space
+const V_CLIP = 'uniform mat3 uM;\nvec4 clip(vec2 p) { return vec4((uM * vec3(p, 1.)).xy, 0., 1.); }\n';
+const V_FULL = 'void main() { gl_Position = vec4(vec2(gl_VertexID & 1, gl_VertexID >> 1) * 4. - 1., 0., 1.); }'; // one big triangle
+// textured rectangle: background, logo (mode 1: on black, clipped to a circle), ring glow (mode 2)
+const pImage = program(V_CLIP + `
+layout(location = 0) in vec2 aQ; uniform vec4 uRect; out vec2 vQ;
+void main() { vQ = aQ; gl_Position = clip(uRect.xy + aQ * uRect.zw); }`, `
+in vec2 vQ; uniform sampler2D uT; uniform vec4 uUV; uniform int uMode; uniform float uEdge; out vec4 o;
+void main() {
+  vec4 c = texture(uT, uUV.xy + vQ * uUV.zw);
+  if (uMode == 1) o = vec4(c.rgb, 1.) * clamp((.5 - length(vQ - .5)) / uEdge + .5, 0., 1.);
+  else if (uMode == 2) o = c * (2. - c.a); // the blurred layers drawn twice, source-over
+  else o = c;
+}`);
+// solid triangles with per-vertex alpha: ring layers and wind lines
+const pFlat = program(V_CLIP + `
+layout(location = 0) in vec2 aP; layout(location = 1) in float aA; out float vA;
+void main() { vA = aA; gl_Position = clip(aP); }`, `
+in float vA; uniform vec3 uC; out vec4 o;
+void main() { o = vec4(uC, 1.) * vA; }`);
+// particles: one instanced soft dot each (x, y, size, alpha)
+const pPart = program(V_CLIP + `
+layout(location = 0) in vec2 aQ; layout(location = 1) in vec4 aI; out vec2 vR; out float vA;
+void main() { vR = aQ * 2. - 1.; vA = aI.w; gl_Position = clip(aI.xy + (aQ - .5) * aI.z); }`, `
+in vec2 vR; in float vA; out vec4 o;
+void main() { float r = length(vR); o = vec4(vA * (r < .35 ? 1. - r / .35 * .4 : .6 * max(0., 1. - (r - .35) / .65))); }`);
+// separable Gaussian blur, one direction per pass
+const pBlur = program(V_FULL, `
+uniform sampler2D uT; uniform vec2 uDir; uniform float uSigma; out vec4 o;
+void main() {
+  vec2 px = 1. / vec2(textureSize(uT, 0)), uv = gl_FragCoord.xy * px;
+  int r = min(64, int(ceil(uSigma * 3.)));
+  vec4 a = vec4(0); float ws = 0.;
+  for (int i = -r; i <= r; i++) { float w = exp(-float(i * i) / (2. * uSigma * uSigma + 1e-6)); a += texture(uT, uv + uDir * px * float(i)) * w; ws += w; }
+  o = a / ws;
+}`);
+const pPost = program(V_FULL, `
+uniform sampler2D uScene, uOver; uniform vec2 uSize, uCaOff; uniform float uCaRad, uOverA, uFlash, uImpV, uContrast;
+uniform int uImp, uGN; uniform vec4 uGRect[40], uGInfo[40]; out vec4 o;
+vec3 scene(vec2 p) { // p: pixels, y down; black outside the frame
+  return p.x < 0. || p.y < 0. || p.x > uSize.x || p.y > uSize.y ? vec3(0) : texture(uScene, vec2(p.x, uSize.y - p.y) / uSize).rgb;
+}
+vec3 base(vec2 p) { // chromatic aberration (R/B shifted along the angle and scaled about the center), title, flash
+  vec2 c = uSize * .5;
+  vec3 col = vec3(scene((p - c - uCaOff) / (1. + uCaRad) + c).r, scene(p).g, scene((p - c + uCaOff) / (1. - uCaRad) + c).b);
+  if (uOverA > 0.) { vec4 t = texture(uOver, p / uSize); col = col * (1. - t.a * uOverA) + t.rgb * uOverA; }
+  return mix(col, vec3(1), uFlash);
+}
+vec3 frame(vec2 p) { // impact frame: 1 lead-in fade, 2 black, 3 B&W, 4 inverted (3/4 pushed in by uImpV)
+  if (uImp == 0) return base(p);
+  if (uImp == 1) return base(p) * (1. - uImpV);
+  if (uImp == 2) return vec3(0);
+  vec3 c = base((p - uSize * .5) / uImpV + uSize * .5);
+  float l = clamp((dot(c, vec3(.2126, .7152, .0722)) - .5) * uContrast + .5, 0., 1.);
+  return vec3(uImp == 4 ? 1. - l : l);
+}
+void main() {
+  vec2 p = vec2(gl_FragCoord.x, uSize.y - gl_FragCoord.y);
+  vec3 tint = vec3(1);
+  for (int i = uGN - 1; i >= 0; i--) { // glitch slices, last one on top. rect: x, y, w, h · info: shift, block?, tint
+    vec4 r = uGRect[i], f = uGInfo[i];
+    if (p.y < r.y || p.y >= r.y + r.w) continue;
+    if (f.y > 0.) { if (p.x < r.x + f.x || p.x >= r.x + r.z + f.x) continue; p.x -= f.x; }
+    else p.x = mod(p.x - f.x, uSize.x); // full strips wrap around the edge
+    if (f.z == 1.) tint = vec3(1., .235, .627); else if (f.z == 2.) tint = vec3(.188, .878, 1.); // multiply: magenta / cyan
+    break;
+  }
+  o = vec4(frame(p) * tint, 1.);
+}`);
+gl.useProgram(pPost.p); gl.uniform1i(pPost.u.uOver, 1);
+
+const quadBuf = gl.createBuffer(), geoBuf = gl.createBuffer(), instBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
+const attr = (buf, loc, size, stride = 0, off = 0, div = 0) => {
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, size, gl.FLOAT, false, stride, off); gl.vertexAttribDivisor(loc, div);
+};
+const vao = setup => { const v = gl.createVertexArray(); gl.bindVertexArray(v); setup(); gl.bindVertexArray(null); return v; };
+const vQuad = vao(() => attr(quadBuf, 0, 2));
+const vGeo = vao(() => { attr(geoBuf, 0, 2, 12, 0); attr(geoBuf, 1, 1, 12, 8); }); // x, y, alpha
+const vPart = vao(() => { attr(quadBuf, 0, 2); attr(instBuf, 1, 4, 0, 0, 1); });
+const vNone = gl.createVertexArray();
+
+gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true); // everything blends premultiplied
+function texture() {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+const alloc = (t, w, h) => { gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null); };
+function upload(t, src, mips) { // canvases/images: row 0 is the top (so v = y / height)
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+  if (mips) { gl.generateMipmap(gl.TEXTURE_2D); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); }
+}
+function target(t) {
+  const f = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  return f;
+}
+const sceneTex = texture(), glowA = texture(), glowB = texture(), bgTex = texture(), logoTex = texture(), ovTex = texture();
+const sceneFbo = target(sceneTex), glowAFbo = target(glowA), glowBFbo = target(glowB); // glow: 1/4 size
+const SAMPLES = Math.min(4, gl.getParameter(gl.MAX_SAMPLES)), msRb = gl.createRenderbuffer(), msFbo = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, msFbo);
+gl.bindRenderbuffer(gl.RENDERBUFFER, msRb);
+gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, msRb);
+
+let W, H, u, GW, GH, rendering = false;
 function setSize(w, h) {
-  w = Math.max(1, w); h = Math.max(1, h); // a hidden/minimised window reports 0×0, and 0-size canvases can't be drawn
-  W = cv.width = sc.width = bg.width = tmp.width = w;
-  gw.width = gb.width = Math.max(1, Math.ceil(w / 4)); gw.height = gb.height = Math.max(1, Math.ceil(h / 4));
-  H = cv.height = sc.height = bg.height = tmp.height = h;
+  w = Math.max(1, w); h = Math.max(1, h); // a hidden/minimised window reports 0×0
+  W = cv.width = bg.width = ov.width = w;
+  H = cv.height = bg.height = ov.height = h;
+  GW = Math.ceil(w / 4); GH = Math.ceil(h / 4);
   u = Math.min(W, H) / 1080;
+  alloc(sceneTex, W, H); alloc(glowA, GW, GH); alloc(glowB, GW, GH);
+  gl.bindRenderbuffer(gl.RENDERBUFFER, msRb); gl.renderbufferStorageMultisample(gl.RENDERBUFFER, SAMPLES, gl.RGBA8, W, H);
+  ovKey = null;
   renderBg();
 }
 function resize() { // live view follows the window (letterboxed to the render aspect if previewing); a render sets its own size
@@ -632,15 +774,10 @@ function renderBg() {
   }
   bgg.fillStyle = `rgba(0,0,0,${params.bgDim})`;
   bgg.fillRect(0, 0, W, H);
+  upload(bgTex, bg);
 }
 addEventListener('resize', resize);
 resize();
-
-// soft particle sprite
-const dot = document.createElement('canvas'); dot.width = dot.height = 64;
-{ const d = dot.getContext('2d'), gr = d.createRadialGradient(32, 32, 0, 32, 32, 32);
-  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.35, 'rgba(255,255,255,.6)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
-  d.fillStyle = gr; d.fillRect(0, 0, 64, 64); }
 
 const newParticle = anyZ => ({ x: Math.random() * 2 - 1, y: Math.random() * 2 - 1, z: anyZ ? Math.random() : 1, s: 0.4 + Math.random() * 1.2 });
 let particles = [];
@@ -872,56 +1009,56 @@ function impactState() { // → null, { fade: 0..1 } during the lead-in fade, or
   if (rem > lead && rem <= lead + fadeS) { const f = 1 - (rem - lead) / fadeS; return { fade: f * f }; }
   return null;
 }
-function impactFrame(st) {
-  if (st.fade !== undefined) { out.fillStyle = `rgba(0,0,0,${st.fade * params.ifDepth})`; out.fillRect(0, 0, W, H); return; }
-  let style = params.ifMode;
-  if (params.ifFlick && Math.floor(st.since * 1000 / params.ifFlick) % 2) style = style === 1 ? 2 : style === 2 ? 1 : 2; // flicker
-  if (style === 0) { out.fillStyle = '#000'; out.fillRect(0, 0, W, H); return; }
-  tg.globalCompositeOperation = 'copy'; tg.drawImage(cv, 0, 0);
-  const z = 1 + params.ifZoom * st.hit; // slight push-in while the impact frame is up
-  out.fillStyle = style === 2 ? '#fff' : '#000'; out.fillRect(0, 0, W, H);
-  out.filter = `grayscale(1) contrast(${params.ifContrast})` + (style === 2 ? ' invert(1)' : '');
-  out.drawImage(tmp, W / 2 - W * z / 2, H / 2 - H * z / 2, W * z, H * z);
-  out.filter = 'none';
+function impactUniforms(U) { // → post shader: 0 none, 1 fade (by uImpV), 2 black, 3 B&W, 4 inverted (pushed in by uImpV)
+  const st = impactState();
+  let mode = 0, v = 0;
+  if (st?.fade !== undefined) { mode = 1; v = st.fade * params.ifDepth; }
+  else if (st) {
+    let style = params.ifMode;
+    if (params.ifFlick && Math.floor(st.since * 1000 / params.ifFlick) % 2) style = style === 1 ? 2 : style === 2 ? 1 : 2; // flicker
+    mode = style + 2; v = 1 + params.ifZoom * st.hit; // slight push-in while the impact frame is up
+  }
+  gl.uniform1i(U.uImp, mode); gl.uniform1f(U.uImpV, v); gl.uniform1f(U.uContrast, params.ifContrast);
 }
 $('#dropTest').onclick = testDrop;
 
 // ---------- Drawing ----------
-// Ring glow: the layers are drawn at 1/4 size, blurred there (1/16 of the pixels) and stretched back up under
-// the sharp layers. Much cheaper than a per-layer shadowBlur, which Firefox renders slowly.
-function drawGlow(drawLayers) {
-  const m = g.getTransform(), k = gw.width / W;
-  gwg.setTransform(1, 0, 0, 1, 0, 0); gwg.clearRect(0, 0, gw.width, gw.height);
-  gwg.setTransform(m.a * k, m.b * k, m.c * k, m.d * k, m.e * k, m.f * k); // same camera, scaled down
-  drawLayers(gwg);
-  gbg.clearRect(0, 0, gb.width, gb.height);
-  gbg.filter = `blur(${params.glow * u * k / 2}px)`; // shadowBlur s ≈ Gaussian sigma s/2
-  gbg.drawImage(gw, 0, 0); gbg.drawImage(gw, 0, 0); // twice: the old per-layer shadows stacked (closest match measured)
-  gbg.filter = 'none';
-  g.save(); g.setTransform(1, 0, 0, 1, 0, 0);
-  g.drawImage(gb, 0, 0, W, H);
-  g.restore();
+// Geometry is built on the CPU each frame into one vertex array (x, y, alpha), uploaded once, drawn in ranges.
+let geo = new Float32Array(1 << 16), inst = new Float32Array(4096), gi = 0;
+const grow = (a, n) => a.length >= n ? a : new Float32Array(Math.max(n, a.length * 2));
+const vtx = (x, y, a) => { geo[gi++] = x; geo[gi++] = y; geo[gi++] = a; };
+const rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
+function mat(a, b, c, d, e, f) { // canvas-style transform (x' = a x + c y + e, y' = b x + d y + f), then pixels → clip space
+  return Float32Array.of(2 * a / W, -2 * b / H, 0, 2 * c / W, -2 * d / H, 0, 2 * e / W - 1, 1 - 2 * f / H, 1);
 }
-function ringPath(c, arr, cx, cy, R, Hh) {
+
+// closed smooth curve (quadratics through the band midpoints) as a triangle fan around the center
+const RING_STEPS = 8;
+function ringFan(arr, cx, cy, R, Hh) {
   const n = arr.length, rot = params.rot * Math.PI / 180, pts = [];
   const add = (a, v) => { const r = R + params.base * u + v * Hh; pts.push(cx + r * Math.sin(a + rot), cy - r * Math.cos(a + rot)); };
   if (params.mirror) {
     for (let i = 0; i < n; i++) add((i + 0.5) / n * Math.PI, arr[i]);
     for (let i = n - 1; i >= 0; i--) add(-(i + 0.5) / n * Math.PI, arr[i]);
   } else for (let i = 0; i < n; i++) add((i + 0.5) / n * Math.PI * 2, arr[i]);
-  // closed smooth curve through midpoints
   const m = pts.length / 2, X = i => pts[(i % m) * 2], Y = i => pts[(i % m) * 2 + 1];
-  c.beginPath();
-  c.moveTo((X(0) + X(1)) / 2, (Y(0) + Y(1)) / 2);
-  for (let i = 1; i <= m; i++) c.quadraticCurveTo(X(i), Y(i), (X(i) + X(i + 1)) / 2, (Y(i) + Y(i + 1)) / 2);
-  c.closePath();
+  vtx(cx, cy, 1);
+  for (let i = 1; i <= m; i++) {
+    const x0 = (X(i - 1) + X(i)) / 2, y0 = (Y(i - 1) + Y(i)) / 2, x2 = (X(i) + X(i + 1)) / 2, y2 = (Y(i) + Y(i + 1)) / 2;
+    for (let s = 0; s < RING_STEPS; s++) {
+      const t = s / RING_STEPS, a = (1 - t) * (1 - t), b = 2 * t * (1 - t), c = t * t;
+      vtx(a * x0 + b * X(i) + c * x2, a * y0 + b * Y(i) + c * y2, 1);
+    }
+  }
+  vtx((X(0) + X(1)) / 2, (Y(0) + Y(1)) / 2, 1);
 }
 
-// same starfield projection as the particles: head at depth z, tail further back at z + Length
-function drawWind(cx, cy, D, spread, kick, dt, t, burst) {
+// same starfield projection as the particles: head at depth z, tail further back at z + Length.
+// Each line is a 33-point wavy strip, fading in from the tail.
+const wx = new Float32Array(33), wy = new Float32Array(33);
+function windStrips(cx, cy, D, spread, kick, dt, t, burst) {
   while (wind.length < params.wCount) wind.push(newWind(true));
   wind.length = params.wCount;
-  g.lineCap = g.lineJoin = 'round';
   const speed = params.wSpeed * (1 + kick * params.wBoost) * burst * 0.18 * dt, proj = spread * 0.35;
   for (const s of wind) {
     s.z -= speed;
@@ -929,34 +1066,43 @@ function drawWind(cx, cy, D, spread, kick, dt, t, burst) {
     if (s.z <= 0.02 || r0 > D + 50) { Object.assign(s, newWind(false)); continue; }
     const near = 1 - Math.min(1, s.z);           // grows 0→1 as the line approaches, like particle size
     const amp = params.wAmp * u * s.a * (0.4 + near), k = params.wWaves * 2 * Math.PI / len, ph = s.ph + t * params.wWiggle;
-    g.beginPath();
+    const hw = params.wWidth * u * (0.5 + near) / 2, A = params.wAlpha * clamp(near * 2.5);
     for (let i = 0; i <= 32; i++) {
       const f = i / 32, r = r0 + f * len, w = amp * Math.sin(Math.PI * f) * Math.sin(k * f * len - ph); // ends pinned to the path
-      g.lineTo(cx + s.dx * r - s.dy * w, cy + s.dy * r + s.dx * w);
+      wx[i] = cx + s.dx * r - s.dy * w; wy[i] = cy + s.dy * r + s.dx * w;
     }
-    const gr = g.createLinearGradient(cx + s.dx * r0, cy + s.dy * r0, cx + s.dx * r1, cy + s.dy * r1);
-    gr.addColorStop(0, 'rgba(255,255,255,0)');
-    gr.addColorStop(1, `rgba(255,255,255,${params.wAlpha * clamp(near * 2.5)})`);
-    g.strokeStyle = gr;
-    g.lineWidth = params.wWidth * u * (0.5 + near);
-    g.stroke();
+    let pl, pr, pa;
+    for (let i = 0; i <= 32; i++) {
+      const j0 = Math.max(0, i - 1), j1 = Math.min(32, i + 1), tx = wx[j1] - wx[j0], ty = wy[j1] - wy[j0], l = Math.hypot(tx, ty) || 1;
+      const nx = -ty / l * hw, ny = tx / l * hw, L = [wx[i] + nx, wy[i] + ny], Rt = [wx[i] - nx, wy[i] - ny], a = A * i / 32;
+      if (i) { vtx(...pl, pa); vtx(...pr, pa); vtx(...L, a); vtx(...pr, pa); vtx(...Rt, a); vtx(...L, a); }
+      pl = L; pr = Rt; pa = a;
+    }
   }
 }
 
-// splits the scene into R/G/B copies shifted apart (offset along caAngle + radial scale)
-function composite(cx, cy, kick, env) {
-  const amt = 1 + kick * params.caBoost + env * params.dCA, off = params.caOffset * u * amt, rad = params.caRadial * amt;
-  if (!off && !rad) return out.drawImage(sc, 0, 0);
-  const a = params.caAngle * Math.PI / 180, ax = Math.cos(a) * off, ay = Math.sin(a) * off;
-  out.fillStyle = '#000'; out.fillRect(0, 0, W, H);
-  for (const [col, sg] of [['#f00', 1], ['#0f0', 0], ['#00f', -1]]) {
-    tg.globalCompositeOperation = 'copy'; tg.drawImage(sc, 0, 0);
-    tg.globalCompositeOperation = 'multiply'; tg.fillStyle = col; tg.fillRect(0, 0, W, H);
-    const s = 1 + sg * rad;
-    out.globalCompositeOperation = 'lighter';
-    out.drawImage(tmp, cx - W * s / 2 + sg * ax, cy - H * s / 2 + sg * ay, W * s, H * s);
-  }
-  out.globalCompositeOperation = 'source-over';
+let logoOf = null, logoUV = [0, 0, 1, 1];
+function syncLogo() { // rasterised through a 2D canvas so SVG logos work in every browser
+  if (!logo || logo === logoOf) return;
+  logoOf = logo;
+  const iw = logo.naturalWidth || 512, ih = logo.naturalHeight || 512, s = 1024 / Math.max(iw, ih), [c, cg] = mk();
+  c.width = Math.max(1, Math.round(iw * s)); c.height = Math.max(1, Math.round(ih * s));
+  cg.drawImage(logo, 0, 0, c.width, c.height);
+  upload(logoTex, c, true);
+  const fx = Math.min(1, ih / iw), fy = Math.min(1, iw / ih); // "cover": crop the long side
+  logoUV = [(1 - fx) / 2, (1 - fy) / 2, fx, fy];
+}
+function image(t, m, x, y, w, h, mode = 0, uv = [0, 0, 1, 1], edge = 1) {
+  const U = use(pImage);
+  gl.uniformMatrix3fv(U.uM, false, m); gl.uniform4f(U.uRect, x, y, w, h); gl.uniform4fv(U.uUV, uv);
+  gl.uniform1i(U.uMode, mode); gl.uniform1f(U.uEdge, edge);
+  gl.bindTexture(gl.TEXTURE_2D, t); gl.bindVertexArray(vQuad); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+function blur(src, dst, dx, dy) { // shadowBlur s ≈ Gaussian sigma s/2, at 1/4 size
+  const U = use(pBlur);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, dst);
+  gl.uniform2f(U.uDir, dx, dy); gl.uniform1f(U.uSigma, params.glow * u * GW / W / 2);
+  gl.bindTexture(gl.TEXTURE_2D, src); gl.bindVertexArray(vNone); gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
 // ---------- Glitch slices ----------
@@ -972,26 +1118,20 @@ function makeSlices(I) {
     set.push({
       x: block ? Math.random() * (W - w) : 0, y, w, h, block,
       dx: (Math.random() * 2 - 1) * params.gShift * u * I,
-      tint: Math.random() < params.gRGB * 0.5 ? (Math.random() < 0.5 ? '#ff3ca0' : '#30e0ff') : null,
+      tint: Math.random() < params.gRGB * 0.5 ? (Math.random() < 0.5 ? 1 : 2) : 0, // magenta / cyan (post shader)
     });
   }
   return set;
 }
-function glitch(dt, kick) {
+const gRect = new Float32Array(160), gInfo = new Float32Array(160); // up to 40 slices (the Slices max)
+function glitchUniforms(U, dt, kick) {
   gEnv = Math.max(0, gEnv - dt / params.gLen);
   const I = Math.max(gEnv, params.gBass * kick * kick);
-  if (I < 0.02) return (gSet = []);
-  if ((gTimer -= dt) <= 0 || !gSet.length) { gTimer = 1 / params.gRate; gSet = makeSlices(I); }
-  tg.globalCompositeOperation = 'copy'; tg.drawImage(cv, 0, 0);
-  for (const s of gSet) {
-    out.drawImage(tmp, s.x, s.y, s.w, s.h, s.x + s.dx, s.y, s.w, s.h);
-    if (!s.block) out.drawImage(tmp, 0, s.y, W, s.h, s.dx - Math.sign(s.dx) * W, s.y, W, s.h); // wrap-around
-    if (s.tint) { // multiply: bright content turns magenta/cyan, black stays black
-      out.globalCompositeOperation = 'multiply';
-      out.fillStyle = s.tint; out.fillRect(s.block ? s.x + s.dx : 0, s.y, s.w, s.h);
-      out.globalCompositeOperation = 'source-over';
-    }
-  }
+  if (I < 0.02) gSet = [];
+  else if ((gTimer -= dt) <= 0 || !gSet.length) { gTimer = 1 / params.gRate; gSet = makeSlices(I).slice(0, 40); }
+  gSet.forEach((s, i) => { gRect.set([s.x, s.y, s.w, s.h], i * 4); gInfo.set([s.dx, s.block ? 1 : 0, s.tint, 0], i * 4); });
+  gl.uniform1i(U.uGN, gSet.length);
+  if (gSet.length) { gl.uniform4fv(U.uGRect, gRect); gl.uniform4fv(U.uGInfo, gInfo); }
 }
 
 let last = performance.now(), camAngle = 0, tiltSign = 1, kickOn = false;
@@ -1014,60 +1154,85 @@ function renderFrame(dt, t) {
   const target = (params.camSway * Math.sin(t * 2 * Math.PI * params.camSpeed) + tiltSign * kick * params.camKick + dropSign * env * params.dSpin) * Math.PI / 180;
   camAngle += (target - camAngle) * (1 - Math.pow(1 - params.camEase, dt * 60));
 
-  g.setTransform(1, 0, 0, 1, 0, 0);
-  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
   const sh = (params.shake * kick * kick + params.dShake * env) * u, zoom = 1 + env * params.dZoom;
-  g.translate(cx + (Math.random() * 2 - 1) * sh, cy + (Math.random() * 2 - 1) * sh);
-  g.rotate(camAngle);
-  g.scale(zoom, zoom);
-  g.translate(-cx, -cy);
+  const co = Math.cos(camAngle) * zoom, si = Math.sin(camAngle) * zoom;
+  const tx = cx + (Math.random() * 2 - 1) * sh, ty = cy + (Math.random() * 2 - 1) * sh;
+  const cam = mat(co, si, -si, co, tx - co * cx + si * cy, ty - si * cx - co * cy); // shake, rotate, zoom about the center
 
-  // background with bass zoom, overscanned so shake and rotation never show edges
-  const ca = Math.abs(Math.cos(camAngle)), sa = Math.abs(Math.sin(camAngle));
-  const bz = (1.03 + kick * params.bgZoom) * (ca + sa * Math.max(W / H, H / W));
-  g.drawImage(bg, cx - W * bz / 2, cy - H * bz / 2, W * bz, H * bz);
-
-  // particles: fly outward from center (starfield projection)
+  // particles: fly outward from center (starfield projection) → instances (x, y, size, alpha)
   const spread = Math.max(W, H) * 0.5, speed = params.pSpeed * (1 + kick * params.pBoost) * burst * 0.18 * dt;
+  inst = grow(inst, particles.length * 4);
+  let np = 0;
   for (const p of particles) {
     p.z -= speed;
     const px = cx + p.x / p.z * spread * 0.35, py = cy + p.y / p.z * spread * 0.35;
     if (p.z <= 0.02 || Math.hypot(px - cx, py - cy) > D + 50) { Object.assign(p, newParticle(false)); continue; }
-    const s = params.pSize * u * p.s * (1.2 / p.z + 1) * 2;
-    g.globalAlpha = params.pAlpha * clamp((1 - p.z) * 2.5);
-    g.drawImage(dot, px - s / 2, py - s / 2, s, s);
+    inst[np++] = px; inst[np++] = py; inst[np++] = params.pSize * u * p.s * (1.2 / p.z + 1) * 2;
+    inst[np++] = params.pAlpha * clamp((1 - p.z) * 2.5);
   }
-  g.globalAlpha = 1;
 
-  drawWind(cx, cy, D, spread, kick, dt, t, burst);
-
-  // spectrum layers, back (most delayed) to front
+  // wind strips, then the spectrum layers back (most delayed) to front, into one vertex buffer
+  geo = grow(geo, params.wCount * 576 + params.layers * (2 * cur.length * RING_STEPS + 2) * 3);
+  gi = 0;
+  windStrips(cx, cy, D, spread, kick, dt, t, burst);
+  const windN = gi / 3, layers = [];
   const scale = 1 + kick * params.pulse, R = params.radius * u * scale, Hh = params.height * u * (1 + env * params.dRing);
-  const drawLayers = c => {
-    for (let L = params.layers - 1; L >= 0; L--) {
-      const arr = hist[Math.min(hist.length - 1, L * params.delay)];
-      if (!arr) continue;
-      c.fillStyle = params.colors[L] || '#fff';
-      ringPath(c, arr, cx, cy, R, Hh * (1 + L * params.spread));
-      c.fill();
-    }
+  for (let L = params.layers - 1; L >= 0; L--) {
+    const arr = hist[Math.min(hist.length - 1, L * params.delay)];
+    if (!arr) continue;
+    const start = gi / 3;
+    ringFan(arr, cx, cy, R, Hh * (1 + L * params.spread));
+    layers.push([rgb(params.colors[L] || '#ffffff'), start, gi / 3 - start]);
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, geoBuf); gl.bufferData(gl.ARRAY_BUFFER, geo.subarray(0, gi), gl.STREAM_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, instBuf); gl.bufferData(gl.ARRAY_BUFFER, inst.subarray(0, np), gl.STREAM_DRAW);
+  const flat = (mode, first, count, color = [1, 1, 1]) => {
+    const U = use(pFlat);
+    gl.uniformMatrix3fv(U.uM, false, cam); gl.uniform3fv(U.uC, color);
+    gl.bindVertexArray(vGeo); gl.drawArrays(mode, first, count);
   };
-  if (params.glow > 0) drawGlow(drawLayers);
-  drawLayers(g);
+  const drawLayers = () => { for (const [c, s, n] of layers) flat(gl.TRIANGLE_FAN, s, n, c); };
 
-  // logo clipped to circle
-  g.save();
-  g.beginPath(); g.arc(cx, cy, R, 0, Math.PI * 2); g.clip();
-  g.fillStyle = '#000'; g.fill();
-  if (logo) drawCover(g, logo, cx, cy, R * 2, R * 2);
-  g.restore();
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  // ring glow: the layers at 1/4 size, blurred there (1/16 of the pixels), stretched back up under the sharp layers
+  const glow = params.glow > 0 && layers.length > 0;
+  if (glow) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, glowAFbo); gl.viewport(0, 0, GW, GH);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    drawLayers();
+    gl.disable(gl.BLEND);
+    blur(glowA, glowBFbo, 1, 0); blur(glowB, glowAFbo, 0, 1);
+    gl.enable(gl.BLEND);
+  }
 
-  composite(cx, cy, kick, env);
-  drawOverlay();
-  if (env > 0 && params.dFlash) { out.fillStyle = `rgba(255,255,255,${params.dFlash * env * env})`; out.fillRect(0, 0, W, H); }
-  const ist = impactState(); // after the flash: an on-hit impact frame replaces it, then the flash shows through
-  if (ist) impactFrame(ist);
-  glitch(dt, kick);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, msFbo); gl.viewport(0, 0, W, H);
+  gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  // background with bass zoom, overscanned so shake and rotation never show edges
+  const ca = Math.abs(Math.cos(camAngle)), sa = Math.abs(Math.sin(camAngle));
+  const bz = (1.03 + kick * params.bgZoom) * (ca + sa * Math.max(W / H, H / W));
+  image(bgTex, cam, cx - W * bz / 2, cy - H * bz / 2, W * bz, H * bz);
+  if (np) { const U = use(pPart); gl.uniformMatrix3fv(U.uM, false, cam); gl.bindVertexArray(vPart); gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, np / 4); }
+  if (windN) flat(gl.TRIANGLES, 0, windN);
+  if (glow) image(glowA, mat(1, 0, 0, 1, 0, 0), 0, 0, W, H, 2, [0, 1, 1, -1]); // render targets are stored bottom-up
+  drawLayers();
+  syncLogo();
+  image(logoTex, cam, cx - R, cy - R, 2 * R, 2 * R, 1, logoUV, 1 / (2 * R)); // logo on black, clipped to the circle
+  gl.disable(gl.BLEND);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, msFbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, sceneFbo); // resolve the MSAA
+  gl.blitFramebuffer(0, 0, W, H, 0, 0, W, H, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+
+  // post: chromatic aberration, title overlay, drop flash, impact frame, glitch slices → screen
+  const amt = 1 + kick * params.caBoost + env * params.dCA, off = params.caOffset * u * amt, a = params.caAngle * Math.PI / 180;
+  const overlay = updateOverlay(), U = use(pPost);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, W, H);
+  gl.uniform2f(U.uSize, W, H); gl.uniform2f(U.uCaOff, Math.cos(a) * off, Math.sin(a) * off); gl.uniform1f(U.uCaRad, params.caRadial * amt);
+  gl.uniform1f(U.uOverA, overlay ? params.ovAlpha : 0);
+  gl.uniform1f(U.uFlash, env > 0 ? params.dFlash * env * env : 0);
+  impactUniforms(U); // after the flash: an on-hit impact frame replaces it, then the flash shows through
+  glitchUniforms(U, dt, kick);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, ovTex);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+  gl.bindVertexArray(vNone); gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
 // ---------- Offline render ----------
