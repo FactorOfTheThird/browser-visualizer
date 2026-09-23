@@ -3,7 +3,30 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Trap Visualizer</title>
+<title>Trap Visualizer – Trap Nation-style audio visualizer in your browser</title>
+<meta name="description" content="Make Trap Nation-style music visualizer videos in your browser. Load a song from a file, YouTube or SoundCloud, pick a logo, background and colors, mark the drops and render an MP4.">
+<meta name="theme-color" content="#000000">
+<link rel="canonical" href="https://factorofthethird.github.io/browser-visualizer/">
+<!-- also the default logo (DEFAULT_LOGO reads it from here) -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Ccircle cx='100' cy='100' r='100' fill='%230b0b0b'/%3E%3Ccircle cx='100' cy='100' r='86' fill='none' stroke='%23fff' stroke-width='5'/%3E%3Cpath d='M100 48 L148 136 L52 136 Z' fill='none' stroke='%23fff' stroke-width='9' stroke-linejoin='round'/%3E%3C/svg%3E">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Trap Visualizer">
+<meta property="og:description" content="Make Trap Nation-style music visualizer videos in your browser and render them to MP4.">
+<meta property="og:url" content="https://factorofthethird.github.io/browser-visualizer/">
+<meta property="og:image" content="https://factorofthethird.github.io/browser-visualizer/assets/og-image.png">
+<meta property="og:image:width" content="1920">
+<meta property="og:image:height" content="1080">
+<meta property="og:image:alt" content="Browser Visualizer title beside the default triangle logo inside a pulsing spectrum ring">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{"@context": "https://schema.org", "@type": "WebApplication", "name": "Trap Visualizer",
+ "url": "https://factorofthethird.github.io/browser-visualizer/",
+ "description": "Trap Nation-style audio visualizer that runs in the browser and renders MP4 videos.",
+ "applicationCategory": "MultimediaApplication", "operatingSystem": "Any", "browserRequirements": "Requires WebCodecs",
+ "isAccessibleForFree": true, "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
+ "image": "https://factorofthethird.github.io/browser-visualizer/assets/og-image.png",
+ "codeRepository": "https://github.com/FactorOfTheThird/browser-visualizer"}
+</script>
 <style>
   :root { --panel: rgba(13,13,19,.84); --line: #262631; --field: #1a1a23; --edge: #30303d;
           --text: #e8e8ee; --muted: #8d8d9c; --accent: #ff3b5c; }
@@ -526,10 +549,7 @@ function updateOverlay() {
 
 // ---------- Images ----------
 const loadImg = src => new Promise(res => { const i = new Image(); i.onload = () => res(i); i.src = src; });
-const DEFAULT_LOGO = 'data:image/svg+xml,' + encodeURIComponent(
-  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><circle cx="100" cy="100" r="100" fill="#0b0b0b"/>
-   <circle cx="100" cy="100" r="86" fill="none" stroke="#fff" stroke-width="5"/>
-   <path d="M100 48 L148 136 L52 136 Z" fill="none" stroke="#fff" stroke-width="9" stroke-linejoin="round"/></svg>`);
+const DEFAULT_LOGO = $('link[rel=icon]').href;
 // Images are saved downscaled as data URLs so they survive reloads.
 const lsGet = k => { try { return localStorage.getItem(k); } catch {} };
 const lsSet = (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch { status('Image too large to remember after reload'); } };

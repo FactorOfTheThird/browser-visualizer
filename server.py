@@ -6,7 +6,7 @@ ROOT = pathlib.Path(__file__).parent
 CACHE = ROOT / "cache"
 YT_HOSTS = ("youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be",
             "soundcloud.com", "www.soundcloud.com", "m.soundcloud.com", "on.soundcloud.com")
-PUBLIC = ("/", "/index.html", "/vendor/", "/samples/")  # everything else (.git, cache, server.py) stays private
+PUBLIC = ("/", "/index.html", "/vendor/", "/samples/", "/assets/")  # everything else (.git, cache, server.py) stays private
 TYPES = {".m4a": "audio/mp4", ".mp4": "audio/mp4", ".webm": "audio/webm", ".opus": "audio/ogg", ".mp3": "audio/mpeg"}
 
 
