@@ -480,7 +480,7 @@ $('#ytLoad').onclick = async () => {
     setSource(URL.createObjectURL(await r.blob()), h('X-Title'), h('X-Track'), h('X-Artist'));
   } catch (e) { status('Failed: ' + e.message); }
 };
-$('#ytUrl').onkeydown = e => e.key === 'Enter' && $('#ytLoad').click();
+$('#ytUrl').onkeydown = e => { if (e.key === 'Enter') $('#ytLoad').click(); };
 
 // ---------- Song overlay (title + artist, bottom right) ----------
 // Auto-filled on load; "Artist - Title" uploads are split and "(Official Video)"-style tags dropped.
@@ -635,7 +635,7 @@ $('#pSave').onclick = () => {
   if (!name) { status('Type a name for the preset first'); return $('#pName').focus(); }
   if (storePreset(name, currentPreset())) status(`Saved preset "${name}"`);
 };
-$('#pName').onkeydown = e => e.key === 'Enter' && $('#pSave').click();
+$('#pName').onkeydown = e => { if (e.key === 'Enter') $('#pSave').click(); };
 confirmClick($('#pDel'), () => {
   const name = $('#pSel').value, all = presetStore();
   delete all[name];
