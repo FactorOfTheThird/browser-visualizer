@@ -76,8 +76,9 @@
   <h3>Presets</h3>
   <div class="flex">
     <select id="pSel" style="flex:1;min-width:0"><option value="">Saved presets…</option></select>
-    <button id="pSave">Save as…</button><button id="pDel" title="Delete the selected preset">✕</button>
+    <button id="pDel" title="Delete the selected preset (click twice)">✕</button>
   </div>
+  <div class="flex"><input id="pName" type="text" placeholder="Preset name"><button id="pSave">Save</button></div>
   <div class="flex">
     <button id="pExport">Export…</button><button id="pImport">Import…</button><input id="pFile" type="file" accept=".json,application/json" hidden>
     <label style="display:flex;gap:4px;align-items:center" title="Include the logo and background images"><input id="pImg" type="checkbox" checked>images</label>
@@ -236,6 +237,18 @@ groups['Drop effects'].insertAdjacentHTML('beforeend',
   '<div class="flex"><button id="edOpen">Edit drops…</button><button id="dropTest">Test drop (D)</button></div><output id="dropInfo" style="display:block;text-align:left"></output>');
 $('#reset').onclick = () => { try { localStorage.removeItem('tnv'); } catch {} location.reload(); };
 const status = t => $('#status').textContent = t;
+// click-twice confirmation instead of confirm(): embedded browsers (e.g. app preview panes) often block pop-ups
+function confirmClick(btn, action, canArm = () => true) {
+  const label = btn.textContent;
+  let timer = 0;
+  const disarm = () => { clearTimeout(timer); timer = 0; btn.textContent = label; };
+  btn.onclick = () => {
+    if (timer) { disarm(); return action(); }
+    if (!canArm()) return;
+    btn.textContent = 'Sure?';
+    timer = setTimeout(disarm, 3000);
+  };
+}
 
 // ---------- Audio ----------
 const audio = $('#audio');
@@ -405,19 +418,21 @@ function storePreset(name, pr) {
 listPresets();
 $('#pSel').onchange = async e => {
   const name = e.target.value, pr = presetStore()[name];
+  $('#pName').value = name;
   if (pr) { await applyPreset(pr); status(`Loaded preset "${name}"`); }
 };
 $('#pSave').onclick = () => {
-  const name = prompt('Preset name', $('#pSel').value)?.trim();
-  if (name && storePreset(name, currentPreset($('#pImg').checked))) status(`Saved preset "${name}"`);
+  const name = $('#pName').value.trim();
+  if (!name) { status('Type a name for the preset first'); return $('#pName').focus(); }
+  if (storePreset(name, currentPreset($('#pImg').checked))) status(`Saved preset "${name}"`);
 };
-$('#pDel').onclick = () => {
+$('#pName').onkeydown = e => e.key === 'Enter' && $('#pSave').click();
+confirmClick($('#pDel'), () => {
   const name = $('#pSel').value, all = presetStore();
-  if (!name || !confirm(`Delete preset "${name}"?`)) return;
   delete all[name];
   try { localStorage.setItem('tnvPresets', JSON.stringify(all)); } catch {}
-  listPresets(); status(`Deleted preset "${name}"`);
-};
+  listPresets(); $('#pName').value = ''; status(`Deleted preset "${name}"`);
+}, () => $('#pSel').value || (status('Pick a preset to delete first'), false));
 $('#pExport').onclick = () => {
   const name = $('#pSel').value || 'my-look';
   const a = document.createElement('a');
@@ -610,7 +625,7 @@ $('#edPlay').onclick = () => $('#play').click();
 $('#edPre').onclick = () => { audio.currentTime = Math.max(0, (sel ?? audio.currentTime) - 2); audio.play(); };
 $('#edMark').onclick = () => markAt(audio.currentTime);
 $('#edDel').onclick = delSel;
-$('#edClear').onclick = () => { if (drops.length && confirm('Remove all drop markers for this song?')) { drops = []; sel = null; saveDrops(); } };
+confirmClick($('#edClear'), () => { drops = []; sel = null; saveDrops(); }, () => drops.length > 0);
 
 wc.onwheel = e => {
   e.preventDefault();
@@ -902,10 +917,58 @@ function renderFrame(dt, t) {
 
 // ---------- Offline render ----------
 // Renders the whole song frame by frame at a fixed size/fps. It isn't tied to real time, so every frame is
-// exact even on slow machines. Audio analysis runs in an OfflineAudioContext that pauses at each frame's
-// time; frames and audio are encoded with WebCodecs (H.264 + AAC, Opus fallback) and muxed into an MP4.
+// exact even on slow machines. The spectrum comes from PcmAnalyser (the AnalyserNode maths run on the decoded
+// song), frames + audio are encoded with WebCodecs (H.264 + AAC, Opus fallback) and muxed into an MP4.
+// Works in Chrome/Edge and Firefox 130+.
 const MP4_MUXER = './vendor/mp4-muxer.mjs'; // mp4-muxer 5.2.2 (MIT), bundled so rendering works offline
 let renderCancel = false;
+
+// In-place radix-2 FFT (re/im length must be a power of two).
+function fft(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) { // bit-reversal permutation
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang), half = len >> 1;
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < half; k++) {
+        const a = i + k, b = a + half, tr = re[b] * cr - im[b] * ci, ti = re[b] * ci + im[b] * cr;
+        re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+        const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+      }
+    }
+  }
+}
+// Same maths as the Web Audio AnalyserNode spec (mono downmix → Blackman window → FFT → |X|/N →
+// smoothing over calls → dB → bytes), read at sample `pos` of a decoded song. Stands in for the live
+// analyser during a render: every browser can run it (Firefox can't pause an OfflineAudioContext).
+class PcmAnalyser {
+  constructor(buffer, fftSize, minDecibels, maxDecibels) {
+    Object.assign(this, { fftSize, minDecibels, maxDecibels, frequencyBinCount: fftSize / 2, smoothingTimeConstant: 0.8, pos: 0 });
+    this.context = { sampleRate: buffer.sampleRate };
+    const n = buffer.length, chs = buffer.numberOfChannels;
+    this.pcm = new Float32Array(n);
+    for (let c = 0; c < chs; c++) { const d = buffer.getChannelData(c); for (let i = 0; i < n; i++) this.pcm[i] += d[i] / chs; }
+    this.win = Float64Array.from({ length: fftSize }, (_, i) => 0.42 - 0.5 * Math.cos(2 * Math.PI * i / fftSize) + 0.08 * Math.cos(4 * Math.PI * i / fftSize));
+    this.re = new Float64Array(fftSize); this.im = new Float64Array(fftSize); this.mag = new Float64Array(fftSize / 2);
+  }
+  getByteFrequencyData(out) {
+    const N = this.fftSize, { re, im, pcm, win, mag } = this, s0 = this.pos - N;
+    for (let i = 0; i < N; i++) { const j = s0 + i; re[i] = (j >= 0 && j < pcm.length ? pcm[j] : 0) * win[i]; im[i] = 0; }
+    fft(re, im);
+    const k = this.smoothingTimeConstant, scale = 255 / (this.maxDecibels - this.minDecibels);
+    for (let b = 0; b < N / 2; b++) {
+      mag[b] = k * mag[b] + (1 - k) * Math.hypot(re[b], im[b]) / N;
+      out[b] = clamp(Math.floor(scale * (20 * Math.log10(mag[b]) - this.minDecibels)), 0, 255); // log10(0) → -∞ → 0
+    }
+  }
+}
+
 function resetScene() {
   cur = new Float32Array(0); hist = []; bass = 0; bassPeak = 0;
   drop = 0; prevT = 0; testDropAt = 0; testHitAt = 0; gEnv = 0; gSet = []; camAngle = 0; kickOn = false;
@@ -915,14 +978,17 @@ function avcCodec(w, h) { // H.264 High profile; level high enough for the frame
   const px = w * h;
   return px > 2560 * 1440 ? 'avc1.640034' : px > 1920 * 1088 ? 'avc1.640033' : 'avc1.64002a';
 }
+// yield to the page so progress paints and Cancel works (MessageChannel isn't throttled in background tabs)
+const yieldToPage = () => new Promise(r => { const c = new MessageChannel(); c.port1.onmessage = r; c.port2.postMessage(0); });
+
 $('#rCancel').onclick = () => renderCancel = true;
 $('#rGo').onclick = async () => {
   if (!srcUrl) return status('Load a song first');
-  if (!('VideoEncoder' in window)) return status('This browser can\'t encode video (needs WebCodecs: Chrome or Edge)');
+  if (!('VideoEncoder' in window)) return status('This browser can\'t encode video (needs WebCodecs: Chrome, Edge or Firefox 130+)');
   const [w, h] = $('#rRes').value.split('x').map(Number), fps = +$('#rFps').value;
   const bitrate = Math.round(w * h * fps * +$('#rQ').value);
   const name = ((meta.a ? meta.a + ' - ' : '') + (meta.t || 'visualizer')).replace(/[\\/:*?"<>|]/g, '').trim() + '.mp4';
-  let file = null; // stream straight to disk when the browser allows it (big 4K renders don't fit in memory)
+  let file = null; // Chrome/Edge: pick the file up front and stream straight into it
   if (window.showSaveFilePicker) {
     try { file = await showSaveFilePicker({ suggestedName: name, types: [{ description: 'MP4 video', accept: { 'video/mp4': ['.mp4'] } }] }); }
     catch { return; } // save dialog cancelled
@@ -930,6 +996,21 @@ $('#rGo').onclick = async () => {
   try { await renderVideo({ w, h, fps, bitrate, file, name }); }
   catch (e) { status('Render failed: ' + e.message); console.error(e); }
 };
+
+// Without a save dialog (Firefox), render into the browser's private disk storage (OPFS) and download from
+// there, so long 4K renders don't have to fit in memory. Leftovers from earlier renders are cleared first.
+async function clearOldRenders() {
+  const dir = await navigator.storage?.getDirectory?.().catch(() => null);
+  if (dir) for await (const [n] of dir.entries()) if (n.startsWith('render-')) await dir.removeEntry(n).catch(() => {});
+  return dir;
+}
+clearOldRenders(); // on page load: the last download has long finished
+async function opfsTarget() {
+  const dir = await clearOldRenders();
+  if (!dir) return null;
+  const fh = await dir.getFileHandle(`render-${Date.now()}.mp4`, { create: true });
+  return { fh, writable: await fh.createWritable() };
+}
 
 async function renderVideo({ w, h, fps, bitrate, file, name }) {
   status('Preparing render…');
@@ -946,7 +1027,11 @@ async function renderVideo({ w, h, fps, bitrate, file, name }) {
   }
   if (!acfg) throw new Error('no supported audio encoder (AAC or Opus)');
 
-  const writable = file && await file.createWritable();
+  // write into the picked file; some embedded browsers show the dialog but refuse the write → fall back to
+  // browser storage + download (also the path for browsers without a save dialog, like Firefox)
+  const direct = file ? await file.createWritable().catch(() => null) : null;
+  const opfs = direct ? null : await opfsTarget();
+  const writable = direct || opfs?.writable;
   const muxer = new Muxer({
     target: writable ? new FileSystemWritableFileStreamTarget(writable) : new ArrayBufferTarget(),
     video: { codec: 'avc', width: w, height: h, frameRate: fps },
@@ -969,13 +1054,9 @@ async function renderVideo({ w, h, fps, bitrate, file, name }) {
     }
   };
 
-  // analysis: same analyser settings as live, fed by an offline context we step one frame at a time
-  const off = new OfflineAudioContext(ch, ab.length, sr), src = off.createBufferSource(), an = off.createAnalyser();
-  an.fftSize = 8192; an.minDecibels = -70; an.maxDecibels = -10;
-  src.buffer = ab; src.connect(an); an.connect(off.destination);
-
+  const an = new PcmAnalyser(ab, 8192, -70, -10); // same settings as the live analyser
   const live = { analyser, freq, clock: { ...clock } };
-  let T = 0, i = 0;
+  let T = 0;
   analyser = an; freq = new Uint8Array(an.frequencyBinCount);
   clock.t = () => T; clock.playing = () => true;
   audio.pause();
@@ -983,35 +1064,23 @@ async function renderVideo({ w, h, fps, bitrate, file, name }) {
   document.body.classList.add('rendering'); $('#rPanel').hidden = false;
   setSize(w, h); resetScene();
   const start = performance.now();
-  const step = async () => {
-    T = i / fps;
-    renderFrame(1 / fps, T);
-    const vf = new VideoFrame(cv, { timestamp: Math.round(i * 1e6 / fps), duration: Math.round(1e6 / fps) });
-    venc.encode(vf, { keyFrame: i % (fps * 2) === 0 });
-    vf.close();
-    feedAudio(Math.min(ab.length, Math.round((i + 1) / fps * sr)));
-    // let the encoder catch up (event-driven: timers get throttled when the tab isn't focused)
-    while (venc.encodeQueueSize > 6) await new Promise(r => venc.addEventListener('dequeue', r, { once: true }));
-    if (i % 10 === 0) {
-      const rate = (i + 1) / ((performance.now() - start) / 1000);
-      $('#rProg').value = i / frames;
-      $('#rInfo').value = `frame ${i + 1} / ${frames} · ${rate.toFixed(0)} fps · ~${fmt((frames - i) / rate)} left`;
-    }
-    i++;
-  };
   try {
-    await step(); // frame 0 renders before any audio has played
-    const next = () => {
-      if (i >= frames || renderCancel || encErr) return;
-      off.suspend(i / fps).then(async () => {
-        try { await step(); } catch (e) { encErr = e; }
-        next(); off.resume();
-      });
-    };
-    src.start(); next();
-    await off.startRendering();
-    while (i < frames && !renderCancel && !encErr) await step(); // any frames past the last suspend point
-
+    for (let i = 0; i < frames && !renderCancel && !encErr; i++) {
+      T = i / fps; an.pos = Math.round(T * sr);
+      renderFrame(1 / fps, T);
+      const vf = new VideoFrame(cv, { timestamp: Math.round(i * 1e6 / fps), duration: Math.round(1e6 / fps) });
+      venc.encode(vf, { keyFrame: i % (fps * 2) === 0 });
+      vf.close();
+      feedAudio(Math.min(ab.length, Math.round((i + 1) / fps * sr)));
+      // let the encoder catch up (event-driven: timers get throttled when the tab isn't focused)
+      while (venc.encodeQueueSize > 6) await new Promise(r => venc.addEventListener('dequeue', r, { once: true }));
+      if (i % 10 === 0) {
+        const rate = (i + 1) / ((performance.now() - start) / 1000);
+        $('#rProg').value = i / frames;
+        $('#rInfo').value = `frame ${i + 1} / ${frames} · ${rate.toFixed(0)} fps · ~${fmt((frames - i) / rate)} left`;
+        await yieldToPage();
+      }
+    }
     if (renderCancel || encErr) {
       venc.close(); aenc.close(); await writable?.abort();
       return status(encErr ? 'Render failed: ' + encErr.message : 'Render cancelled');
@@ -1020,12 +1089,14 @@ async function renderVideo({ w, h, fps, bitrate, file, name }) {
     await venc.flush(); await aenc.flush();
     muxer.finalize();
     if (writable) await writable.close();
-    else {
+    if (!direct) { // not written straight to a picked file: hand it to the browser's download
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([muxer.target.buffer], { type: 'video/mp4' })); a.download = name; a.click();
+      a.href = URL.createObjectURL(opfs ? await opfs.fh.getFile() : new Blob([muxer.target.buffer], { type: 'video/mp4' }));
+      a.download = name; a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 60000);
     }
-    status(`Rendered ${name}: ${fmt(ab.duration)} at ${w}×${h} ${fps} fps in ${fmt((performance.now() - start) / 1000)}`);
+    status(`Rendered ${name}: ${fmt(ab.duration)} at ${w}×${h} ${fps} fps in ${fmt((performance.now() - start) / 1000)}` +
+      (acfg.codec === 'opus' ? ' (Opus audio: this browser has no AAC encoder)' : ''));
   } finally {
     analyser = live.analyser; freq = live.freq; Object.assign(clock, live.clock);
     rendering = false;
