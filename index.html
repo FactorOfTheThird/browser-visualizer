@@ -5,91 +5,168 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Trap Visualizer</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font: 12px system-ui, sans-serif; color: #ddd; }
+  :root { --panel: rgba(13,13,19,.84); --line: #262631; --field: #1a1a23; --edge: #30303d;
+          --text: #e8e8ee; --muted: #8d8d9c; --accent: #ff3b5c; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font: 12.5px/1.35 system-ui, "Segoe UI", sans-serif; color: var(--text); }
   canvas { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; }
-  select { background: #1b1b22; color: #eee; border: 1px solid #333; border-radius: 5px; padding: 4px; }
-  #rPanel { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); width: min(560px, calc(100% - 32px)); box-sizing: border-box;
-            background: rgba(12,12,16,.92); border: 1px solid #2a2a33; border-radius: 10px; padding: 12px; }
-  #rPanel[hidden] { display: none; }
-  #rPanel progress { width: 100%; margin: 6px 0; }
-  body.rendering #ui { display: none; }
-  #ui { position: fixed; top: 12px; left: 12px; width: 310px; max-height: calc(100% - 24px); overflow: auto; box-sizing: border-box;
-        background: rgba(12,12,16,.88); backdrop-filter: blur(8px); border: 1px solid #2a2a33; border-radius: 10px; padding: 12px; }
-  body.hide #ui { display: none; } body.hide { cursor: none; }
-  h3 { margin: 12px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #888; }
-  h3:first-child { margin-top: 0; }
-  input[type=text] { flex: 1; min-width: 0; background: #1b1b22; border: 1px solid #333; color: #eee; border-radius: 5px; padding: 5px 7px; }
-  button { background: #2b2b36; color: #eee; border: 1px solid #3a3a48; border-radius: 5px; padding: 5px 10px; cursor: pointer; }
-  button:hover { background: #383848; }
-  .flex { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
-  audio { width: 100%; height: 32px; margin-top: 6px; }
-  #status { color: #9ad; min-height: 1em; margin-top: 4px; word-break: break-word; }
-  details { border-top: 1px solid #25252e; padding: 4px 0; }
-  summary { cursor: pointer; padding: 4px 0; font-weight: 600; color: #bbb; }
-  .row { display: grid; grid-template-columns: 110px 1fr 42px; gap: 6px; align-items: center; margin: 3px 0; }
-  .row input[type=range] { width: 100%; accent-color: #fff; }
-  output { text-align: right; color: #999; font-variant-numeric: tabular-nums; }
-  #colors { display: flex; flex-wrap: wrap; gap: 4px; }
-  #colors input { width: 30px; height: 24px; padding: 0; border: 1px solid #333; background: none; cursor: pointer; }
-  .hint { color: #666; margin-top: 10px; }
+  button, input, select { font: inherit; color: inherit; }
+  button { background: #262632; border: 1px solid #353545; border-radius: 7px; padding: 6px 11px; cursor: pointer; transition: background .15s, border-color .15s; }
+  button:hover { background: #313142; border-color: #45455a; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.primary:hover { filter: brightness(1.12); }
+  button.icon { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; flex: none; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  input[type=text], input[type=number], select { background: var(--field); border: 1px solid var(--edge); border-radius: 7px; padding: 6px 8px; min-width: 0; }
+  input[type=text] { flex: 1; }
+  input[type=number] { width: 100%; box-sizing: border-box; padding: 4px 6px; text-align: right; font-variant-numeric: tabular-nums; -moz-appearance: textfield; }
+  input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=range] { width: 100%; margin: 0; accent-color: var(--accent); cursor: pointer; }
+  input[type=checkbox] { accent-color: var(--accent); }
+  output { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* control panel + its show/hide buttons */
+  #ui { position: fixed; top: 12px; left: 12px; width: 340px; max-height: calc(100% - 24px); display: flex; flex-direction: column; box-sizing: border-box;
+        background: var(--panel); backdrop-filter: blur(14px) saturate(1.2); border: 1px solid var(--line); border-radius: 14px;
+        box-shadow: 0 12px 40px rgba(0,0,0,.45); transition: opacity .2s, transform .2s; }
+  #ui > header { display: flex; align-items: center; gap: 8px; padding: 9px 9px 9px 14px; border-bottom: 1px solid var(--line); }
+  #ui > header b { flex: 1; font-size: 13px; letter-spacing: .02em; }
+  #ui > header b::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px;
+                           background: var(--accent); box-shadow: 0 0 10px var(--accent); vertical-align: 1px; }
+  .scroll { overflow: auto; padding: 0 14px 12px; scrollbar-width: thin; scrollbar-color: #3a3a4a transparent; }
+  body.hide #ui, body.rendering #ui { opacity: 0; transform: translateX(-12px); pointer-events: none; }
+  #uiShow { position: fixed; top: 12px; left: 12px; width: 40px; height: 40px; border-radius: 50%; display: none;
+            background: var(--panel); backdrop-filter: blur(10px); border-color: var(--line); transition: opacity .3s; }
+  body.hide:not(.rendering) #uiShow { display: grid; }
+  body.hide.idle #uiShow { opacity: 0; }
+  body.hide.idle { cursor: none; }
+
+  /* collapsible sections and rows */
+  details { border-top: 1px solid var(--line); }
+  .scroll > details:first-child { border-top: 0; }
+  summary { list-style: none; cursor: pointer; padding: 11px 0; display: flex; align-items: center; gap: 8px; user-select: none;
+            font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: ""; width: 5px; height: 5px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+                    transform: rotate(-45deg); transition: transform .15s; }
+  details[open] > summary::before { transform: rotate(45deg); }
+  summary:hover { color: var(--text); }
+  details[open] { padding-bottom: 8px; }
+  .row { display: grid; grid-template-columns: 108px 1fr 58px; gap: 8px; align-items: center; margin: 6px 0; }
+  .row.choice { grid-template-columns: 108px 1fr; }
+  .row > span { color: #c4c4cf; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .flex { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+  .flex > select { flex: 1; }
+  .sub { color: var(--muted); font-size: 11px; margin: 10px 0 2px; }
+  .switch { position: relative; width: 34px; height: 20px; }
+  .switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+  .switch i { position: absolute; inset: 0; border-radius: 10px; background: #33333f; transition: background .15s; pointer-events: none; }
+  .switch i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .15s; }
+  .switch input:checked + i { background: var(--accent); }
+  .switch input:checked + i::after { transform: translateX(14px); }
+  .switch input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .seg { display: flex; gap: 2px; padding: 2px; background: var(--field); border: 1px solid var(--edge); border-radius: 7px; }
+  .seg button { flex: 1; border: 0; background: none; padding: 4px 6px; border-radius: 5px; color: var(--muted); }
+  .seg button:hover { background: #262632; color: var(--text); }
+  .seg button.on { background: #3a3a50; color: #fff; }
+  #colors { display: flex; flex-wrap: wrap; gap: 6px; }
+  input[type=color] { width: 30px; height: 30px; padding: 0; border: 1px solid var(--edge); border-radius: 7px; background: none; cursor: pointer; }
+  input[type=color]::-webkit-color-swatch-wrapper { padding: 3px; }
+  input[type=color]::-webkit-color-swatch { border: 0; border-radius: 4px; }
+  .hint { color: #6f6f7d; margin-top: 8px; font-size: 11.5px; }
+  #status { color: #9fc1ff; min-height: 1em; margin: 4px 0; word-break: break-word; }
   #seekWrap { position: relative; flex: 1; display: flex; }
-  #seek { flex: 1; margin: 0; accent-color: #fff; }
+  #marks i { position: absolute; top: -3px; width: 2px; height: 5px; background: var(--accent); pointer-events: none; transform: translateX(-1px); }
+  footer { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  footer button { white-space: nowrap; }
+
+  /* render progress + drop editor */
+  #rPanel { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); width: min(560px, calc(100% - 32px)); box-sizing: border-box;
+            background: var(--panel); backdrop-filter: blur(14px); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
+  #rPanel[hidden] { display: none; }
+  #rPanel progress { width: 100%; margin: 6px 0; accent-color: var(--accent); }
   #dropEd { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 16px; }
   #dropEd[hidden] { display: none; }
-  .edBox { width: min(1200px, 100%); background: #121218; border: 1px solid #2a2a33; border-radius: 10px; padding: 12px; box-sizing: border-box; }
-  #wave { position: static; width: 100%; height: 220px; display: block; margin: 8px 0; border-radius: 6px; cursor: crosshair; touch-action: none; }
-  #marks i { position: absolute; top: -3px; width: 2px; height: 5px; background: #ff3b5c; pointer-events: none; transform: translateX(-1px); }
+  .edBox { width: min(1200px, 100%); background: #121218; border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; box-sizing: border-box; }
+  #wave { position: static; width: 100%; height: 220px; display: block; margin: 8px 0; border-radius: 8px; cursor: crosshair; touch-action: none; }
+
+  /* narrow screens: the panel becomes a bottom sheet */
+  @media (max-width: 640px) {
+    #ui { top: auto; left: 0; right: 0; bottom: 0; width: auto; max-height: 62vh; border-radius: 16px 16px 0 0; border-bottom: 0; }
+    body.hide #ui { transform: translateY(16px); }
+    #uiHide svg { transform: rotate(-90deg); }
+    #uiShow { top: auto; bottom: 16px; }
+    .row { grid-template-columns: 100px 1fr 56px; }
+    .row.choice { grid-template-columns: 100px 1fr; }
+  }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<button id="uiShow" class="icon" title="Show controls (H)" aria-label="Show controls">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>
+</button>
 <div id="ui">
-  <h3>Song</h3>
-  <div class="flex"><button type="button" onclick="audioFile.click()">Audio file…</button><input id="audioFile" type="file" accept="audio/*,video/*" hidden></div>
-  <div class="flex"><input id="ytUrl" type="text" placeholder="YouTube or SoundCloud URL"><button id="ytLoad">Load</button></div>
-  <audio id="audio"></audio>
-  <div class="flex"><button id="play" style="width:34px">▶</button><span id="seekWrap"><input id="seek" type="range" min="0" max="1" step="0.0001" value="0"><span id="marks"></span></span><output id="time">0:00</output></div>
-  <label class="row"><span>Volume</span><input id="vol" type="range" min="0" max="1" step="0.01"><output id="volOut"></output></label>
-  <div id="status"></div>
-  <div class="flex"><input id="ovTitle" type="text" placeholder="Overlay: song title"></div>
-  <div class="flex"><input id="ovArtist" type="text" placeholder="Overlay: artist"></div>
+  <header>
+    <b>Trap Visualizer</b>
+    <button id="uiHide" class="icon" title="Hide controls (H)" aria-label="Hide controls">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+  </header>
+  <div class="scroll">
+    <details open><summary>Song</summary>
+      <div class="flex"><button type="button" onclick="audioFile.click()">Audio file…</button><input id="audioFile" type="file" accept="audio/*,video/*" hidden></div>
+      <div class="flex"><input id="ytUrl" type="text" placeholder="YouTube or SoundCloud URL"><button id="ytLoad">Load</button></div>
+      <audio id="audio"></audio>
+      <div class="flex"><button id="play" class="icon" aria-label="Play / pause">▶</button><span id="seekWrap"><input id="seek" type="range" min="0" max="1" step="0.0001" value="0" aria-label="Seek"><span id="marks"></span></span><output id="time">0:00</output></div>
+      <div class="row"><span>Volume</span><input id="vol" type="range" min="0" max="1" step="0.01" aria-label="Volume"><input id="volNum" type="number" min="0" max="1" step="any" aria-label="Volume value"></div>
+      <div id="status"></div>
+      <div class="sub">Title overlay</div>
+      <div class="flex"><input id="ovTitle" type="text" placeholder="Song title"></div>
+      <div class="flex"><input id="ovArtist" type="text" placeholder="Artist"></div>
+    </details>
 
-  <h3>Render video</h3>
-  <div class="flex">
-    <select id="rRes">
-      <option value="1280x720">720p</option><option value="1920x1080" selected>1080p</option>
-      <option value="2560x1440">1440p</option><option value="3840x2160">4K</option>
-      <option value="1080x1920">1080×1920 vertical</option><option value="1080x1080">1080 square</option>
-    </select>
-    <select id="rFps"><option>30</option><option selected>60</option></select>
-    <select id="rQ"><option value="0.08">Good</option><option value="0.14" selected>High</option><option value="0.25">Max</option></select>
+    <details open><summary>Render video</summary>
+      <div class="flex">
+        <select id="rAspect" aria-label="Aspect ratio">
+          <option value="16:9" selected>16:9 landscape</option><option value="9:16">9:16 vertical</option><option value="1:1">1:1 square</option>
+        </select>
+        <select id="rSize" aria-label="Resolution (short side)">
+          <option value="720">720p</option><option value="1080" selected>1080p</option><option value="1440">1440p</option><option value="2160">4K</option>
+        </select>
+      </div>
+      <div class="flex">
+        <select id="rFps" aria-label="Frame rate"><option value="30">30 fps</option><option value="60" selected>60 fps</option></select>
+        <select id="rQ" aria-label="Quality"><option value="0.08">Good quality</option><option value="0.14" selected>High quality</option><option value="0.25">Max quality</option></select>
+      </div>
+      <div class="row choice"><span>Preview framing</span><label class="switch" title="Letterbox the live view to the render's aspect ratio"><input id="rPreview" type="checkbox" checked aria-label="Preview framing"><i></i></label></div>
+      <div class="flex"><button id="rGo" class="primary" style="flex:1">Render MP4…</button></div>
+    </details>
+
+    <details><summary>Logo, background &amp; colors</summary>
+      <div class="flex">
+        <button type="button" onclick="logoFile.click()">Logo…</button><input id="logoFile" type="file" accept="image/*" hidden>
+        <button type="button" onclick="bgFile.click()">Background…</button><input id="bgFile" type="file" accept="image/*" hidden>
+        <button type="button" id="bgClear">No background</button>
+      </div>
+      <div class="sub">Layer colors (front → back)</div>
+      <div id="colors"></div>
+    </details>
+
+    <details><summary>Presets</summary>
+      <div class="flex">
+        <select id="pSel" aria-label="Saved presets"><option value="">Saved presets…</option></select>
+        <button id="pDel" title="Delete the selected preset (click twice)">✕</button>
+      </div>
+      <div class="flex"><input id="pName" type="text" placeholder="Preset name"><button id="pSave">Save</button></div>
+      <div class="flex">
+        <button id="pExport">Export…</button><button id="pImport">Import…</button><input id="pFile" type="file" accept=".json,application/json" hidden>
+        <label style="display:flex;gap:5px;align-items:center;margin-left:auto" title="Include the logo and background images"><input id="pImg" type="checkbox" checked>with images</label>
+      </div>
+    </details>
+
+    <div id="params"></div>
+    <footer><button id="reset">Reset all</button><span class="hint" style="margin:0">H hide · F fullscreen · Space play · D test drop</span></footer>
   </div>
-  <div class="flex"><button id="rGo">Render MP4…</button></div>
-
-  <h3>Images</h3>
-  <div class="flex">
-    <button type="button" onclick="logoFile.click()">Logo…</button><input id="logoFile" type="file" accept="image/*" hidden>
-    <button type="button" onclick="bgFile.click()">Background…</button><input id="bgFile" type="file" accept="image/*" hidden>
-    <button type="button" id="bgClear">No bg</button>
-  </div>
-
-  <h3>Presets</h3>
-  <div class="flex">
-    <select id="pSel" style="flex:1;min-width:0"><option value="">Saved presets…</option></select>
-    <button id="pDel" title="Delete the selected preset (click twice)">✕</button>
-  </div>
-  <div class="flex"><input id="pName" type="text" placeholder="Preset name"><button id="pSave">Save</button></div>
-  <div class="flex">
-    <button id="pExport">Export…</button><button id="pImport">Import…</button><input id="pFile" type="file" accept=".json,application/json" hidden>
-    <label style="display:flex;gap:4px;align-items:center" title="Include the logo and background images"><input id="pImg" type="checkbox" checked>images</label>
-  </div>
-
-  <h3>Layer colors (front → back)</h3>
-  <div id="colors"></div>
-
-  <div id="params"></div>
-  <div class="flex" style="margin-top:8px"><button id="reset">Reset params</button></div>
-  <div class="hint">H hide UI · F fullscreen · Space play/pause · D test drop · drops are marked in Drop effects → Edit drops…</div>
 </div>
 
 <div id="rPanel" hidden>
@@ -118,7 +195,8 @@
 const $ = s => document.querySelector(s);
 const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
 
-// [key, label, min, max, step, default, group]. Sizes are in 1080p pixels.
+// [key, label, min, max, step, default, group, choice labels?]. Sizes are in 1080p pixels.
+// 0/1 settings with step 1 show as switches; ones with choice labels show as segmented buttons.
 const P = [
   ['sens',    'Sensitivity',   0.2, 3,     0.01, 0.99, 'Spectrum'],
   ['power',   'Punch (power)', 1,   5,     0.1,  3.3,  'Spectrum'],
@@ -175,9 +253,9 @@ const P = [
   ['gRGB',    'Color tint',    0,   1,     0.01, 0  ,  'Glitch slices'],
   ['gRate',   'Jumps per sec', 2,   60,    1,    16,   'Glitch slices'],
   ['ifOn',    'Enabled',       0,   1,     1,    1,    'Impact frame'],
-  ['ifTiming','Timing',        0,   1,     1,    1,    'Impact frame'],
+  ['ifTiming','Timing',        0,   1,     1,    1,    'Impact frame', ['Before', 'On hit']],
   ['ifFlick', 'Flicker ms',    0,   120,   1,    35,   'Impact frame'],
-  ['ifMode',  'Style',         0,   2,     1,    1,    'Impact frame'],
+  ['ifMode',  'Style',         0,   2,     1,    1,    'Impact frame', ['Black', 'B&W', 'Inverted']],
   ['ifFade',  'Fade out ms',   0,   1500,  10,   280,  'Impact frame'],
   ['ifDepth', 'Fade depth',    0,   1,     0.01, 0.8,  'Impact frame'],
   ['ifLen',   'Impact frame ms',20, 500,   5,    100,  'Impact frame'],
@@ -207,21 +285,47 @@ const params = { colors: saved.colors || [...DEFAULT_COLORS] };
 const save = () => { try { localStorage.setItem('tnv', JSON.stringify(params)); } catch {} };
 
 // ---------- UI ----------
-const groups = {}, inputs = {}; // inputs[key] = [range input, value output], so presets can update them
-for (const [k, label, min, max, step, def, g] of P) {
+// slider + exact-value box kept in sync. Typing allows any precision (finer than the slider's step);
+// values are kept inside the slider's range. Returns a setter so presets can update both.
+function numberSlider(rng, num, min, max, set) {
+  const typed = () => num.value !== '' && isFinite(+num.value);
+  rng.oninput = () => { num.value = rng.value; set(+rng.value); };
+  num.oninput = () => { if (typed() && +num.value >= min && +num.value <= max) { rng.value = num.value; set(+num.value); } };
+  num.onchange = () => { const v = clamp(typed() ? +num.value : +rng.value, min, max); rng.value = num.value = v; set(v); };
+  return v => { rng.value = num.value = v; };
+}
+function onParam(k) {
+  save();
+  if (k === 'layers') buildColors();
+  if (k === 'bgBlur' || k === 'bgDim') renderBg();
+  if (k === 'pCount') resizeParticles();
+}
+// inputs[key] = setter that shows a value in that control (used by presets)
+const groups = {}, inputs = {};
+for (const [k, label, min, max, step, def, g, opts] of P) {
   params[k] = saved[k] ?? def;
-  const box = groups[g] ??= Object.assign(document.createElement('details'), { open: g === 'Spectrum' || g === 'Ring', innerHTML: `<summary>${g}</summary>` });
-  $('#params').append(box);
-  const row = Object.assign(document.createElement('label'), { className: 'row' });
-  row.innerHTML = `<span>${label}</span><input type="range" min="${min}" max="${max}" step="${step}" value="${params[k]}"><output>${params[k]}</output>`;
-  const [inp, out] = row.querySelectorAll('input,output');
-  inputs[k] = [inp, out];
-  inp.oninput = () => {
-    params[k] = +inp.value; out.value = inp.value; save();
-    if (k === 'layers') buildColors();
-    if (k === 'bgBlur' || k === 'bgDim') renderBg();
-    if (k === 'pCount') resizeParticles();
-  };
+  const box = groups[g] ??= $('#params').appendChild(Object.assign(document.createElement('details'), { innerHTML: `<summary>${g}</summary>` }));
+  const row = document.createElement('div'), set = v => { params[k] = v; onParam(k); };
+  if (opts) { // labelled choices → segmented buttons
+    row.className = 'row choice';
+    row.innerHTML = `<span>${label}</span><div class="seg">${opts.map((o, i) => `<button type="button" data-v="${min + i}">${o}</button>`).join('')}</div>`;
+    const btns = [...row.querySelectorAll('button')];
+    inputs[k] = v => btns.forEach(b => b.classList.toggle('on', +b.dataset.v === v));
+    for (const b of btns) b.onclick = () => { set(+b.dataset.v); inputs[k](+b.dataset.v); };
+  } else if (min === 0 && max === 1 && step === 1) { // on/off → switch
+    row.className = 'row choice';
+    row.innerHTML = `<span>${label}</span><label class="switch"><input type="checkbox" aria-label="${label}"><i></i></label>`;
+    const cb = row.querySelector('input');
+    inputs[k] = v => { cb.checked = !!v; };
+    cb.onchange = () => set(cb.checked ? 1 : 0);
+  } else {
+    row.className = 'row';
+    row.innerHTML = `<span title="${label}">${label}</span><input type="range" min="${min}" max="${max}" step="${step}" aria-label="${label}">` +
+      `<input type="number" min="${min}" max="${max}" step="any" aria-label="${label} value">`;
+    const [rng, num] = row.querySelectorAll('input');
+    inputs[k] = numberSlider(rng, num, min, max, set);
+  }
+  inputs[k](params[k]);
   box.append(row);
 }
 function buildColors() {
@@ -235,8 +339,40 @@ function buildColors() {
 buildColors();
 groups['Drop effects'].insertAdjacentHTML('beforeend',
   '<div class="flex"><button id="edOpen">Edit drops…</button><button id="dropTest">Test drop (D)</button></div><output id="dropInfo" style="display:block;text-align:left"></output>');
-$('#reset').onclick = () => { try { localStorage.removeItem('tnv'); } catch {} location.reload(); };
 const status = t => $('#status').textContent = t;
+
+// sections remember whether you left them open or closed
+let openState = {};
+try { openState = JSON.parse(localStorage.getItem('tnvOpen')) || {}; } catch {}
+for (const d of document.querySelectorAll('#ui details')) {
+  const key = d.querySelector('summary').textContent;
+  if (key in openState) d.open = openState[key];
+  d.ontoggle = () => { openState[key] = d.open; try { localStorage.setItem('tnvOpen', JSON.stringify(openState)); } catch {} };
+}
+
+// show/hide the panel (button or H); while hidden, the show button fades out when the mouse is idle
+const setUiHidden = h => document.body.classList.toggle('hide', h);
+$('#uiHide').onclick = () => setUiHidden(true);
+$('#uiShow').onclick = () => setUiHidden(false);
+// render settings: remembered, and the live view re-letterboxes when aspect/size/preview change
+const R_KEYS = ['rAspect', 'rSize', 'rFps', 'rQ', 'rPreview'];
+try {
+  const r = JSON.parse(localStorage.getItem('tnvRender')) || {};
+  for (const k of R_KEYS) if (k in r) $('#' + k)[k === 'rPreview' ? 'checked' : 'value'] = r[k];
+} catch {}
+for (const k of R_KEYS) $('#' + k).onchange = () => {
+  try { localStorage.setItem('tnvRender', JSON.stringify(Object.fromEntries(R_KEYS.map(k => [k, k === 'rPreview' ? $('#' + k).checked : $('#' + k).value])))); } catch {}
+  resize();
+};
+// render frame size: "Size" is the short side, the aspect sets the long side (kept even for H.264)
+function renderDims() {
+  const [a, b] = $('#rAspect').value.split(':').map(Number), s = +$('#rSize').value;
+  return a >= b ? [Math.round(s * a / b / 2) * 2, s] : [s, Math.round(s * b / a / 2) * 2];
+}
+
+let idleTimer = 0;
+const wake = () => { document.body.classList.remove('idle'); clearTimeout(idleTimer); idleTimer = setTimeout(() => document.body.classList.add('idle'), 2500); };
+addEventListener('pointermove', wake); addEventListener('pointerdown', wake); wake();
 // click-twice confirmation instead of confirm(): embedded browsers (e.g. app preview panes) often block pop-ups
 function confirmClick(btn, action, canArm = () => true) {
   const label = btn.textContent;
@@ -249,6 +385,7 @@ function confirmClick(btn, action, canArm = () => true) {
     timer = setTimeout(disarm, 3000);
   };
 }
+confirmClick($('#reset'), () => { try { localStorage.removeItem('tnv'); } catch {} location.reload(); });
 
 // ---------- Audio ----------
 const audio = $('#audio');
@@ -278,8 +415,7 @@ const fmt = s => `${s / 60 | 0}:${String(s % 60 | 0).padStart(2, '0')}`;
 audio.ontimeupdate = () => { $('#seek').value = audio.currentTime / audio.duration || 0; $('#time').value = fmt(audio.currentTime); };
 $('#seek').oninput = e => audio.duration && (audio.currentTime = e.target.value * audio.duration);
 params.vol = saved.vol ?? 0.62;
-$('#vol').value = $('#volOut').value = params.vol;
-$('#vol').oninput = e => { params.vol = $('#volOut').value = +e.target.value; if (gain) gain.gain.value = params.vol; save(); };
+numberSlider($('#vol'), $('#volNum'), 0, 1, v => { params.vol = v; if (gain) gain.gain.value = v; save(); })(params.vol);
 function setSource(url, title, track, artist) {
   if (srcUrl) URL.revokeObjectURL(srcUrl);
   srcUrl = audio.src = url;
@@ -388,8 +524,7 @@ async function applyPreset(pr) {
     const v = pr.params?.[k];
     if (typeof v !== 'number' || !isFinite(v)) continue;
     params[k] = clamp(v, min, max);
-    const [inp, out] = inputs[k];
-    inp.value = out.value = params[k];
+    inputs[k](params[k]);
   }
   if (Array.isArray(pr.colors))
     params.colors = pr.colors.filter(c => /^#[0-9a-f]{6}$/i.test(c)).concat(DEFAULT_COLORS).slice(0, DEFAULT_COLORS.length);
@@ -473,10 +608,12 @@ function setSize(w, h) {
   u = Math.min(W, H) / 1080;
   renderBg();
 }
-function resize() { // live view follows the window; a render sets its own size
+function resize() { // live view follows the window (letterboxed to the render aspect if previewing); a render sets its own size
   if (rendering) return;
   const dpr = devicePixelRatio || 1;
-  setSize(Math.round(innerWidth * dpr), Math.round(innerHeight * dpr));
+  let w = innerWidth * dpr, h = innerHeight * dpr;
+  if ($('#rPreview').checked) { const [rw, rh] = renderDims(), s = Math.min(w / rw, h / rh); w = rw * s; h = rh * s; }
+  setSize(Math.round(w), Math.round(h));
 }
 function renderBg() {
   bgg.filter = 'none';
@@ -745,8 +882,6 @@ function impactFrame(st) {
   out.filter = 'none';
 }
 $('#dropTest').onclick = testDrop;
-groups['Impact frame'].insertAdjacentHTML('beforeend',
-  '<div class="hint" style="margin-top:2px">Timing: 0 just before the drop · 1 on the hit (anime)<br>Style: 0 blackout · 1 black &amp; white · 2 inverted</div>');
 
 // ---------- Drawing ----------
 function ringPath(arr, cx, cy, R, Hh) {
@@ -985,7 +1120,7 @@ $('#rCancel').onclick = () => renderCancel = true;
 $('#rGo').onclick = async () => {
   if (!srcUrl) return status('Load a song first');
   if (!('VideoEncoder' in window)) return status('This browser can\'t encode video (needs WebCodecs: Chrome, Edge or Firefox 130+)');
-  const [w, h] = $('#rRes').value.split('x').map(Number), fps = +$('#rFps').value;
+  const [w, h] = renderDims(), fps = +$('#rFps').value;
   const bitrate = Math.round(w * h * fps * +$('#rQ').value);
   const name = ((meta.a ? meta.a + ' - ' : '') + (meta.t || 'visualizer')).replace(/[\\/:*?"<>|]/g, '').trim() + '.mp4';
   let file = null; // Chrome/Edge: pick the file up front and stream straight into it
@@ -1107,7 +1242,7 @@ async function renderVideo({ w, h, fps, bitrate, file, name }) {
 
 // ---------- Keys ----------
 addEventListener('keydown', e => {
-  if (rendering || (e.target.tagName === 'INPUT' && e.target.type === 'text')) return;
+  if (rendering || e.target.matches?.('input[type=text], input[type=number], select, textarea')) return;
   if (edOpen()) {
     const k = e.key;
     if (k === 'Escape') ed.hidden = true;
