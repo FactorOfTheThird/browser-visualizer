@@ -148,7 +148,7 @@
         <button type="button" id="logoClear">Default logo</button>
       </div>
       <div class="flex">
-        <button type="button" onclick="bgFile.click()">Background…</button><input id="bgFile" type="file" accept="image/*" hidden>
+        <button type="button" onclick="bgFile.click()" title="Image, GIF or video (loops)">Background…</button><input id="bgFile" type="file" accept="image/*,video/*" hidden>
         <button type="button" id="bgClear">No background</button>
       </div>
       <div id="logoOpts"></div>
@@ -539,8 +539,9 @@ function shrink(img, max, type) {
   c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
   return c.toDataURL(type, 0.9);
 }
-// logo: an <img>, a looping muted <video>, or { frames: [{ img, end (ms) }], dur } for animated GIF/APNG/WebP
-async function loadLogo(blob) {
+// logo / background: an <img>, a looping muted <video>, or { frames: [{ img, end (ms) }], dur } for animated
+// GIF/APNG/WebP (frames downscaled to `max` px)
+async function loadMedia(blob, max) {
   const url = URL.createObjectURL(blob);
   if (blob.type.startsWith('video/')) {
     const v = Object.assign(document.createElement('video'), { src: url, loop: true, muted: true, playsInline: true });
@@ -553,7 +554,7 @@ async function loadLogo(blob) {
     const n = dec.tracks.selectedTrack.frameCount, frames = [];
     let end = 0;
     for (let i = 0; n > 1 && i < n; i++) {
-      const { image } = await dec.decode({ frameIndex: i }), w = image.displayWidth, h = image.displayHeight, s = Math.min(1, 512 / Math.max(w, h));
+      const { image } = await dec.decode({ frameIndex: i }), w = image.displayWidth, h = image.displayHeight, s = Math.min(1, max / Math.max(w, h));
       end += (image.duration > 10000 ? image.duration : 100000) / 1000; // µs; ≤10 ms delays play at 100 ms, like browsers do
       frames.push({ img: raster(image, w * s, h * s), end });
       image.close();
@@ -563,34 +564,33 @@ async function loadLogo(blob) {
   }
   return loadImg(url);
 }
-// animated logos are too big for localStorage: the file goes to browser storage (OPFS), 'opfs:<type>' marks it
+// Still images are remembered downscaled in localStorage; animated ones are too big for that, so the file goes to
+// browser storage (OPFS) under `file` and localStorage holds 'opfs:<type>'.
 const opfsDir = () => navigator.storage?.getDirectory?.().catch(() => null);
-let logo, bgImg;
-(async () => {
-  const s = lsGet('tnvLogo'), f = s?.startsWith('opfs:') && await (await opfsDir())?.getFileHandle('logo').then(h => h.getFile()).catch(() => null);
-  logo = f ? await loadLogo(new Blob([f], { type: s.slice(5) })).catch(() => null) : null;
-  logo ||= await loadImg(s && !f ? s : DEFAULT_LOGO);
-})();
-if (lsGet('tnvBg')) loadImg(lsGet('tnvBg')).then(i => { bgImg = i; renderBg(); });
-$('#logoFile').onchange = async e => {
+async function restoreMedia(key, file, max) {
+  const s = lsGet(key), f = s?.startsWith('opfs:') && await (await opfsDir())?.getFileHandle(file).then(h => h.getFile()).catch(() => null);
+  if (f) return loadMedia(new Blob([f], { type: s.slice(5) }), max).catch(() => null);
+  return s && !s.startsWith('opfs:') ? loadImg(s) : null;
+}
+async function pickMedia(e, what, key, file, max, stillMax, stillType) { // → the loaded media, remembered for reloads
   const f = e.target.files[0]; if (!f) return;
   e.target.value = '';
-  const l = await loadLogo(f).catch(() => null);
-  if (!l) return status('Couldn\'t load that file as a logo');
-  logo?.pause?.(); logo = l;
-  if (l instanceof HTMLImageElement) return lsSet('tnvLogo', shrink(l, 1024, 'image/png'));
-  const w = await (await opfsDir())?.getFileHandle('logo', { create: true }).then(h => h.createWritable()).catch(() => null);
-  if (!w) return lsSet('tnvLogo', null), status('Animated logo won\'t be remembered after reload (no browser storage)');
+  const m = await loadMedia(f, max).catch(() => null);
+  if (!m) return status(`Couldn't load that file as a ${what}`);
+  if (m instanceof HTMLImageElement) { lsSet(key, shrink(m, stillMax, stillType)); return m; }
+  const w = await (await opfsDir())?.getFileHandle(file, { create: true }).then(h => h.createWritable()).catch(() => null);
+  if (!w) { lsSet(key, null); status(`Animated ${what} won't be remembered after reload (no browser storage)`); return m; }
   await w.write(f); await w.close();
-  lsSet('tnvLogo', 'opfs:' + f.type);
-};
+  lsSet(key, 'opfs:' + f.type);
+  return m;
+}
+let logo, bgImg, bgOf = null, bgCur, bgStart = 0; // bgOf: the background frame currently drawn
+restoreMedia('tnvLogo', 'logo', 512).then(async m => logo = m || await loadImg(DEFAULT_LOGO));
+restoreMedia('tnvBg', 'bg', 1280).then(m => bgImg = m);
+$('#logoFile').onchange = async e => { const m = await pickMedia(e, 'logo', 'tnvLogo', 'logo', 512, 1024, 'image/png'); if (m) { logo?.pause?.(); logo = m; } };
 $('#logoClear').onclick = async () => { logo?.pause?.(); logo = await loadImg(DEFAULT_LOGO); lsSet('tnvLogo', null); };
-$('#bgFile').onchange = async e => {
-  const f = e.target.files[0]; if (!f) return;
-  bgImg = await loadImg(URL.createObjectURL(f)); renderBg();
-  lsSet('tnvBg', shrink(bgImg, 2560, 'image/jpeg'));
-};
-$('#bgClear').onclick = () => { bgImg = null; renderBg(); lsSet('tnvBg', null); };
+$('#bgFile').onchange = async e => { const m = await pickMedia(e, 'background', 'tnvBg', 'bg', 1280, 2560, 'image/jpeg'); if (m) { bgImg?.pause?.(); bgImg = m; } };
+$('#bgClear').onclick = () => { bgImg?.pause?.(); bgImg = null; lsSet('tnvBg', null); };
 
 // ---------- Presets ----------
 // A preset is the look: every slider and the layer colors. Logo and background stay the user's own (images
@@ -666,8 +666,8 @@ $('#pFile').onchange = async e => {
 
 // draw img to cover a w×h box centered at (x, y)
 function drawCover(g, img, x, y, w, h) {
-  const s = Math.max(w / img.width, h / img.height);
-  g.drawImage(img, x - img.width * s / 2, y - img.height * s / 2, img.width * s, img.height * s);
+  const iw = img.videoWidth || img.width, ih = img.videoHeight || img.height, s = Math.max(w / iw, h / ih);
+  g.drawImage(img, x - iw * s / 2, y - ih * s / 2, iw * s, ih * s);
 }
 
 // ---------- Renderer (WebGL2) ----------
@@ -830,11 +830,14 @@ function resize() { // live view follows the window (letterboxed to the render a
   setSize(Math.round(w), Math.round(h));
 }
 function renderBg() {
+  // animated + blurred: redrawn every frame, so drawn at 1/4 size (the blur hides it; Canvas2D blur is slow)
+  const b = params.bgBlur * u, q = (bgImg?.frames || bgImg instanceof HTMLVideoElement) && b > 2 ? 0.25 : 1;
+  if (bg.width !== Math.ceil(W * q)) { bg.width = Math.ceil(W * q); bg.height = Math.ceil(H * q); }
+  bgg.setTransform(q, 0, 0, q, 0, 0);
   bgg.filter = 'none';
-  if (bgImg) {
-    const b = params.bgBlur * u;
-    bgg.filter = b ? `blur(${b}px)` : 'none';
-    drawCover(bgg, bgImg, W / 2, H / 2, W + b * 4, H + b * 4); // overscan hides blurred edges
+  if (bgOf) {
+    bgg.filter = b ? `blur(${b * q}px)` : 'none';
+    drawCover(bgg, bgOf, W / 2, H / 2, W + b * 4, H + b * 4); // overscan hides blurred edges
     bgg.filter = 'none';
   } else {
     const gr = bgg.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.hypot(W, H) / 2);
@@ -1157,12 +1160,23 @@ function raster(src, w, h) {
   cg.drawImage(src, 0, 0, c.width, c.height);
   return c;
 }
+// current drawable of logo/background media at t seconds into its animation; keeps videos playing
+function mediaFrame(m, t, once) {
+  if (m instanceof HTMLVideoElement) {
+    m.loop = !once; // play once: an ended video stays on its last frame
+    if (m.paused && !rendering && !(once && m.ended)) m.play().catch(() => {}); // (re)start: browsers pause hidden videos
+  }
+  return m?.frames ? m.frames.find(f => (once ? Math.min(t * 1000, m.dur - 1) : t * 1000 % m.dur) < f.end).img : m;
+}
+function syncBg(t) { // live: animations run from when the file was picked; a render runs them from 0
+  if (bgImg !== bgCur) { bgCur = bgImg; bgStart = t; }
+  const src = mediaFrame(bgImg, rendering ? t : t - bgStart, false) ?? null, vid = src instanceof HTMLVideoElement;
+  if ((src === bgOf && !vid) || (vid && src.readyState < 2)) return;
+  bgOf = src; renderBg();
+}
 function syncLogo(t) {
-  if (logo !== logoCur) { logoCur = logo; logoStart = t; } // live: animations run from when the logo was picked
-  const once = params.logoOnce, ms = (rendering ? t : t - logoStart) * 1000;
-  const src = logo?.frames ? logo.frames.find(f => (once ? Math.min(ms, logo.dur - 1) : ms % logo.dur) < f.end).img : logo, vid = src instanceof HTMLVideoElement;
-  if (vid) src.loop = !once; // play once: an ended video stays on its last frame
-  if (vid && src.paused && !rendering && !(once && src.ended)) src.play().catch(() => {}); // (re)start: browsers pause hidden videos
+  if (logo !== logoCur) { logoCur = logo; logoStart = t; }
+  const src = mediaFrame(logo, rendering ? t : t - logoStart, params.logoOnce), vid = src instanceof HTMLVideoElement;
   if (!src || (src === logoOf && !vid) || (vid && src.readyState < 2)) return;
   logoOf = src;
   const iw = src.videoWidth || src.naturalWidth || src.width || 512, ih = src.videoHeight || src.naturalHeight || src.height || 512;
@@ -1304,6 +1318,7 @@ function renderFrame(dt, t) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, msFbo); gl.viewport(0, 0, W, H);
   gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
   // background with bass zoom, overscanned so shake and rotation never show edges
+  syncBg(t);
   const ca = Math.abs(Math.cos(camAngle)), sa = Math.abs(Math.sin(camAngle));
   const bz = (1.03 + kick * params.bgZoom) * (ca + sa * Math.max(W / H, H / W));
   image(bgTex, cam, cx - W * bz / 2, cy - H * bz / 2, W * bz, H * bz, 0, undefined, 1, fade);
@@ -1484,14 +1499,15 @@ async function renderVideo({ w, h, fps, bitrate, file, name }) {
   rendering = true; renderCancel = false;
   document.body.classList.add('rendering'); $('#rPanel').hidden = false;
   setSize(w, h); resetScene();
-  const vlogo = logo instanceof HTMLVideoElement && logo; // video logos are seeked to each frame's time
-  vlogo?.pause?.();
+  // video logo/background: paused and seeked to each frame's time
+  const seekTo = (v, t) => v instanceof HTMLVideoElement && new Promise(r => { v.pause(); v.addEventListener('seeked', r, { once: true }); v.currentTime = t; });
   const start = performance.now();
   try {
     for (let i = 0; i < frames && !renderCancel && !encErr; i++) {
       T = i / fps; an.pos = Math.round(T * sr);
       // ponytail: a seek per frame is slow for long / sparse-keyframe videos; pre-decode frames if that bites
-      if (vlogo && vlogo === logo) await new Promise(r => { vlogo.addEventListener('seeked', r, { once: true }); vlogo.currentTime = params.logoOnce ? Math.min(T, vlogo.duration - 0.01) : T % vlogo.duration; });
+      const Tm = T + 0.5 / fps; // mid-frame: seeking to an exact frame boundary can land on the previous frame
+      await Promise.all([seekTo(logo, params.logoOnce ? Math.min(Tm, logo.duration - 0.01) : Tm % logo.duration), seekTo(bgImg, Tm % bgImg?.duration)]);
       renderFrame(1 / fps, T);
       const vf = new VideoFrame(cv, { timestamp: Math.round(i * 1e6 / fps), duration: Math.round(1e6 / fps) });
       venc.encode(vf, { keyFrame: i % (fps * 2) === 0 });
