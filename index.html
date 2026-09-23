@@ -1,0 +1,1058 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trap Visualizer</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font: 12px system-ui, sans-serif; color: #ddd; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  select { background: #1b1b22; color: #eee; border: 1px solid #333; border-radius: 5px; padding: 4px; }
+  #rPanel { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); width: min(560px, calc(100% - 32px)); box-sizing: border-box;
+            background: rgba(12,12,16,.92); border: 1px solid #2a2a33; border-radius: 10px; padding: 12px; }
+  #rPanel[hidden] { display: none; }
+  #rPanel progress { width: 100%; margin: 6px 0; }
+  body.rendering #ui { display: none; }
+  #ui { position: fixed; top: 12px; left: 12px; width: 310px; max-height: calc(100% - 24px); overflow: auto; box-sizing: border-box;
+        background: rgba(12,12,16,.88); backdrop-filter: blur(8px); border: 1px solid #2a2a33; border-radius: 10px; padding: 12px; }
+  body.hide #ui { display: none; } body.hide { cursor: none; }
+  h3 { margin: 12px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #888; }
+  h3:first-child { margin-top: 0; }
+  input[type=text] { flex: 1; min-width: 0; background: #1b1b22; border: 1px solid #333; color: #eee; border-radius: 5px; padding: 5px 7px; }
+  button { background: #2b2b36; color: #eee; border: 1px solid #3a3a48; border-radius: 5px; padding: 5px 10px; cursor: pointer; }
+  button:hover { background: #383848; }
+  .flex { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+  audio { width: 100%; height: 32px; margin-top: 6px; }
+  #status { color: #9ad; min-height: 1em; margin-top: 4px; word-break: break-word; }
+  details { border-top: 1px solid #25252e; padding: 4px 0; }
+  summary { cursor: pointer; padding: 4px 0; font-weight: 600; color: #bbb; }
+  .row { display: grid; grid-template-columns: 110px 1fr 42px; gap: 6px; align-items: center; margin: 3px 0; }
+  .row input[type=range] { width: 100%; accent-color: #fff; }
+  output { text-align: right; color: #999; font-variant-numeric: tabular-nums; }
+  #colors { display: flex; flex-wrap: wrap; gap: 4px; }
+  #colors input { width: 30px; height: 24px; padding: 0; border: 1px solid #333; background: none; cursor: pointer; }
+  .hint { color: #666; margin-top: 10px; }
+  #seekWrap { position: relative; flex: 1; display: flex; }
+  #seek { flex: 1; margin: 0; accent-color: #fff; }
+  #dropEd { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 16px; }
+  #dropEd[hidden] { display: none; }
+  .edBox { width: min(1200px, 100%); background: #121218; border: 1px solid #2a2a33; border-radius: 10px; padding: 12px; box-sizing: border-box; }
+  #wave { position: static; width: 100%; height: 220px; display: block; margin: 8px 0; border-radius: 6px; cursor: crosshair; touch-action: none; }
+  #marks i { position: absolute; top: -3px; width: 2px; height: 5px; background: #ff3b5c; pointer-events: none; transform: translateX(-1px); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h3>Song</h3>
+  <div class="flex"><button type="button" onclick="audioFile.click()">Audio file…</button><input id="audioFile" type="file" accept="audio/*,video/*" hidden></div>
+  <div class="flex"><input id="ytUrl" type="text" placeholder="YouTube or SoundCloud URL"><button id="ytLoad">Load</button></div>
+  <audio id="audio"></audio>
+  <div class="flex"><button id="play" style="width:34px">▶</button><span id="seekWrap"><input id="seek" type="range" min="0" max="1" step="0.0001" value="0"><span id="marks"></span></span><output id="time">0:00</output></div>
+  <label class="row"><span>Volume</span><input id="vol" type="range" min="0" max="1" step="0.01"><output id="volOut"></output></label>
+  <div id="status"></div>
+  <div class="flex"><input id="ovTitle" type="text" placeholder="Overlay: song title"></div>
+  <div class="flex"><input id="ovArtist" type="text" placeholder="Overlay: artist"></div>
+
+  <h3>Render video</h3>
+  <div class="flex">
+    <select id="rRes">
+      <option value="1280x720">720p</option><option value="1920x1080" selected>1080p</option>
+      <option value="2560x1440">1440p</option><option value="3840x2160">4K</option>
+      <option value="1080x1920">1080×1920 vertical</option><option value="1080x1080">1080 square</option>
+    </select>
+    <select id="rFps"><option>30</option><option selected>60</option></select>
+    <select id="rQ"><option value="0.08">Good</option><option value="0.14" selected>High</option><option value="0.25">Max</option></select>
+  </div>
+  <div class="flex"><button id="rGo">Render MP4…</button></div>
+
+  <h3>Images</h3>
+  <div class="flex">
+    <button type="button" onclick="logoFile.click()">Logo…</button><input id="logoFile" type="file" accept="image/*" hidden>
+    <button type="button" onclick="bgFile.click()">Background…</button><input id="bgFile" type="file" accept="image/*" hidden>
+    <button type="button" id="bgClear">No bg</button>
+  </div>
+
+  <h3>Presets</h3>
+  <div class="flex">
+    <select id="pSel" style="flex:1;min-width:0"><option value="">Saved presets…</option></select>
+    <button id="pSave">Save as…</button><button id="pDel" title="Delete the selected preset">✕</button>
+  </div>
+  <div class="flex">
+    <button id="pExport">Export…</button><button id="pImport">Import…</button><input id="pFile" type="file" accept=".json,application/json" hidden>
+    <label style="display:flex;gap:4px;align-items:center" title="Include the logo and background images"><input id="pImg" type="checkbox" checked>images</label>
+  </div>
+
+  <h3>Layer colors (front → back)</h3>
+  <div id="colors"></div>
+
+  <div id="params"></div>
+  <div class="flex" style="margin-top:8px"><button id="reset">Reset params</button></div>
+  <div class="hint">H hide UI · F fullscreen · Space play/pause · D test drop · drops are marked in Drop effects → Edit drops…</div>
+</div>
+
+<div id="rPanel" hidden>
+  <div class="flex"><b>Rendering video…</b><output id="rInfo" style="flex:1"></output></div>
+  <progress id="rProg" max="1" value="0"></progress>
+  <div class="flex"><span class="hint" style="margin:0;flex:1">The preview shows each frame as it's rendered — it runs faster or slower than real time.</span><button id="rCancel">Cancel</button></div>
+</div>
+
+<div id="dropEd" hidden>
+  <div class="edBox">
+    <div class="flex"><b>Drop markers</b><output id="edTime" style="flex:1;text-align:left;margin-left:10px"></output><button id="edClose">Done (Esc)</button></div>
+    <canvas id="wave"></canvas>
+    <div class="flex">
+      <button id="edPlay" style="width:34px">▶</button>
+      <button id="edPre">▶ −2s</button>
+      <button id="edMark">Mark drop (M)</button>
+      <button id="edDel">Delete selected (Del)</button>
+      <button id="edClear">Clear all</button>
+    </div>
+    <div class="hint">Click to place the playhead · scroll to zoom · drag to pan · click a marker to select, drag to move ·
+      ←/→ nudge 10 ms (Shift: 100 ms) — moves the selected marker, or the playhead if none · Space play/pause</div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+
+// [key, label, min, max, step, default, group]. Sizes are in 1080p pixels.
+const P = [
+  ['sens',    'Sensitivity',   0.2, 3,     0.01, 0.99, 'Spectrum'],
+  ['power',   'Punch (power)', 1,   5,     0.1,  3.3,  'Spectrum'],
+  ['tilt',    'Treble boost',  0,   2,     0.05, 0  ,  'Spectrum'],
+  ['minHz',   'Min freq Hz',   20,  300,   1,    20,   'Spectrum'],
+  ['maxHz',   'Max freq Hz',   800, 16000, 50,   800 , 'Spectrum'],
+  ['bands',   'Bands per side',16,  128,   1,    24,   'Spectrum'],
+  ['smooth',  'FFT smoothing', 0,   0.95,  0.01, 0.1 , 'Spectrum'],
+  ['fall',    'Fall speed',    0.005, 0.3, 0.005,0.2 , 'Spectrum'],
+  ['blur',    'Curve smooth',  0,   6,     1,    2,    'Spectrum'],
+  ['mirror',  'Mirror',        0,   1,     1,    1,    'Spectrum'],
+  ['radius',  'Circle radius', 60,  450,   1,    200,  'Ring'],
+  ['height',  'Max height',    20,  500,   1,    247,  'Ring'],
+  ['base',    'Base thickness',0,   15,    0.5,  3  ,  'Ring'],
+  ['layers',  'Layers',        1,   10,    1,    6,    'Ring'],
+  ['delay',   'Layer delay (frames)', 0, 10, 1,  2,    'Ring'],
+  ['spread',  'Layer spread',  0,   0.2,   0.005,0.09, 'Ring'],
+  ['glow',    'Glow',          0,   60,    1,    9 ,   'Ring'],
+  ['rot',     'Rotation °',    0,   360,   1,    0,    'Ring'],
+  ['bassHz',  'Bass range Hz', 40,  250,   1,    68 ,  'Bass reaction'],
+  ['thresh',  'Bass threshold',0,   0.95,  0.01, 0.51,  'Bass reaction'],
+  ['pulse',   'Logo pulse',    0,   0.4,   0.005,0.1,  'Bass reaction'],
+  ['shake',   'Shake',         0,   40,    0.5,  2,    'Bass reaction'],
+  ['bgZoom',  'Bg zoom',       0,   0.2,   0.005,0.02, 'Bass reaction'],
+  ['pCount',  'Count',         0,   1500,  10,   350,  'Particles'],
+  ['pSpeed',  'Speed',         0,   3,     0.05, 0.5,  'Particles'],
+  ['pBoost',  'Bass boost',    0,   15,    0.5,  5,    'Particles'],
+  ['pSize',   'Size',          0.2, 6,     0.1,  0.5,  'Particles'],
+  ['pAlpha',  'Opacity',       0,   1,     0.01, 0.8,  'Particles'],
+  ['wCount',  'Count',         0,   40,    1,    12,    'Wind lines'],
+  ['wSpeed',  'Speed',         0,   3,     0.05, 0.5,  'Wind lines'],
+  ['wBoost',  'Bass boost',    0,   10,    0.5,  3,    'Wind lines'],
+  ['wStreak', 'Length',        0.02, 0.8,  0.01, 0.25,  'Wind lines'],
+  ['wAmp',    'Wave height',   0,   40,    0.5,  6,    'Wind lines'],
+  ['wWaves',  'Waves per line',0.5, 8,     0.1,  2,    'Wind lines'],
+  ['wWiggle', 'Wiggle speed',  0,   15,    0.1,  5,    'Wind lines'],
+  ['wWidth',  'Thickness',     0.3, 10,    0.1,  6.9,  'Wind lines'],
+  ['wAlpha',  'Opacity',       0,   1,     0.01, 0.21, 'Wind lines'],
+  ['camSway', 'Sway °',        0,   15,    0.1,  1.5,  'Camera'],
+  ['camSpeed','Sway speed',    0,   2,     0.01, 0.12, 'Camera'],
+  ['camKick', 'Bass tilt °',   0,   15,    0.1,  2.4,  'Camera'],
+  ['camEase', 'Follow speed',  0.02, 1,    0.01, 0.14, 'Camera'],
+  ['caOffset','Offset px',     0,   30,    0.5,  0.5,  'Chromatic aberration'],
+  ['caRadial','Radial split',  0,   0.03,  0.0005, 0.0005, 'Chromatic aberration'],
+  ['caBoost', 'Bass boost ×',  0,   8,     0.1,  1  ,  'Chromatic aberration'],
+  ['caAngle', 'Angle °',       0,   360,   1,    20,    'Chromatic aberration'],
+  ['gOn',     'On drops',      0,   1,     1,    1,    'Glitch slices'],
+  ['gBass',   'On bass',       0,   1,     0.01, 0,    'Glitch slices'],
+  ['gLen',    'Duration s',    0.1, 3,     0.05, 0.4,  'Glitch slices'],
+  ['gSlices', 'Slices',        1,   40,    1,    12,   'Glitch slices'],
+  ['gShift',  'Max shift px',  0,   500,   5,    100,  'Glitch slices'],
+  ['gHeight', 'Max slice height',2, 250,   1,    200,   'Glitch slices'],
+  ['gBlocks', 'Blocks',        0,   1,     0.01, 0.4,  'Glitch slices'],
+  ['gRGB',    'Color tint',    0,   1,     0.01, 0  ,  'Glitch slices'],
+  ['gRate',   'Jumps per sec', 2,   60,    1,    16,   'Glitch slices'],
+  ['ifOn',    'Enabled',       0,   1,     1,    1,    'Impact frame'],
+  ['ifTiming','Timing',        0,   1,     1,    1,    'Impact frame'],
+  ['ifFlick', 'Flicker ms',    0,   120,   1,    35,   'Impact frame'],
+  ['ifMode',  'Style',         0,   2,     1,    1,    'Impact frame'],
+  ['ifFade',  'Fade out ms',   0,   1500,  10,   280,  'Impact frame'],
+  ['ifDepth', 'Fade depth',    0,   1,     0.01, 0.8,  'Impact frame'],
+  ['ifLen',   'Impact frame ms',20, 500,   5,    100,  'Impact frame'],
+  ['ifZoom',  'Impact push-in',0,   0.2,   0.005,0.04, 'Impact frame'],
+  ['ifContrast','Contrast',    1,   6,     0.1,  3,    'Impact frame'],
+  ['dOn',     'Enabled',       0,   1,     1,    1,    'Drop effects'],
+  ['dLen',    'Effect length s',0.2, 4,    0.05, 2  ,  'Drop effects'],
+  ['dFlash',  'Flash',         0,   1,     0.01, 1  ,  'Drop effects'],
+  ['dZoom',   'Zoom punch',    0,   0.5,   0.01, 0.19, 'Drop effects'],
+  ['dBurst',  'Particle burst',0,   20,    0.5,  8.5,    'Drop effects'],
+  ['dRing',   'Ring blowout',  0,   2,     0.05, 0.8,  'Drop effects'],
+  ['dShake',  'Shake',         0,   60,    1,    18,   'Drop effects'],
+  ['dSpin',   'Camera spin °', 0,   30,    0.5,  5,    'Drop effects'],
+  ['dCA',     'Color split ×', 0,   10,    0.1,  1.2,    'Drop effects'],
+  ['ovOn',    'Show',          0,   1,     1,    1,    'Song overlay'],
+  ['ovSize',  'Title size',    16,  140,   1,    46,   'Song overlay'],
+  ['ovMargin','Margin',        0,   300,   1,    56,   'Song overlay'],
+  ['ovAlpha', 'Opacity',       0,   1,     0.01, 0.9,  'Song overlay'],
+  ['bgDim',   'Bg darken',     0,   1,     0.01, 0.56, 'Background'],
+  ['bgBlur',  'Bg blur',       0,   40,    1,    4,    'Background'],
+];
+const DEFAULT_COLORS = ['#ffffff', '#fff200', '#ff9d00', '#ff1e3c', '#e0147a', '#8a2be2', '#1e6bff', '#00e5ff', '#2bff88', '#ff5ef2'];
+
+let saved = {};
+try { saved = JSON.parse(localStorage.getItem('tnv')) || {}; } catch {}
+const params = { colors: saved.colors || [...DEFAULT_COLORS] };
+const save = () => { try { localStorage.setItem('tnv', JSON.stringify(params)); } catch {} };
+
+// ---------- UI ----------
+const groups = {}, inputs = {}; // inputs[key] = [range input, value output], so presets can update them
+for (const [k, label, min, max, step, def, g] of P) {
+  params[k] = saved[k] ?? def;
+  const box = groups[g] ??= Object.assign(document.createElement('details'), { open: g === 'Spectrum' || g === 'Ring', innerHTML: `<summary>${g}</summary>` });
+  $('#params').append(box);
+  const row = Object.assign(document.createElement('label'), { className: 'row' });
+  row.innerHTML = `<span>${label}</span><input type="range" min="${min}" max="${max}" step="${step}" value="${params[k]}"><output>${params[k]}</output>`;
+  const [inp, out] = row.querySelectorAll('input,output');
+  inputs[k] = [inp, out];
+  inp.oninput = () => {
+    params[k] = +inp.value; out.value = inp.value; save();
+    if (k === 'layers') buildColors();
+    if (k === 'bgBlur' || k === 'bgDim') renderBg();
+    if (k === 'pCount') resizeParticles();
+  };
+  box.append(row);
+}
+function buildColors() {
+  const box = $('#colors'); box.innerHTML = '';
+  for (let i = 0; i < params.layers; i++) {
+    const c = Object.assign(document.createElement('input'), { type: 'color', value: params.colors[i] ??= DEFAULT_COLORS[i % DEFAULT_COLORS.length] });
+    c.oninput = () => { params.colors[i] = c.value; save(); };
+    box.append(c);
+  }
+}
+buildColors();
+groups['Drop effects'].insertAdjacentHTML('beforeend',
+  '<div class="flex"><button id="edOpen">Edit drops…</button><button id="dropTest">Test drop (D)</button></div><output id="dropInfo" style="display:block;text-align:left"></output>');
+$('#reset').onclick = () => { try { localStorage.removeItem('tnv'); } catch {} location.reload(); };
+const status = t => $('#status').textContent = t;
+
+// ---------- Audio ----------
+const audio = $('#audio');
+let actx, analyser, gain, freq, srcUrl;
+// what the visuals follow: the audio player live, the render timeline during an offline render
+const clock = { t: () => audio.currentTime, playing: () => !audio.paused };
+// The analyser taps the signal before the volume gain, so volume never changes the visuals.
+// (audio.volume stays at 1: the browser applies it before Web Audio sees the signal.)
+function initAudio() {
+  if (actx) return actx.resume();
+  actx = new AudioContext();
+  analyser = actx.createAnalyser();
+  analyser.fftSize = 8192;
+  analyser.minDecibels = -70;
+  analyser.maxDecibels = -10;
+  gain = actx.createGain();
+  gain.gain.value = params.vol;
+  const src = actx.createMediaElementSource(audio);
+  src.connect(analyser);
+  src.connect(gain).connect(actx.destination);
+  freq = new Uint8Array(analyser.frequencyBinCount);
+}
+audio.onplay = () => { initAudio(); $('#play').textContent = '❚❚'; };
+audio.onpause = () => $('#play').textContent = '▶';
+$('#play').onclick = () => audio.src && (audio.paused ? audio.play() : audio.pause());
+const fmt = s => `${s / 60 | 0}:${String(s % 60 | 0).padStart(2, '0')}`;
+audio.ontimeupdate = () => { $('#seek').value = audio.currentTime / audio.duration || 0; $('#time').value = fmt(audio.currentTime); };
+$('#seek').oninput = e => audio.duration && (audio.currentTime = e.target.value * audio.duration);
+params.vol = saved.vol ?? 0.62;
+$('#vol').value = $('#volOut').value = params.vol;
+$('#vol').oninput = e => { params.vol = $('#volOut').value = +e.target.value; if (gain) gain.gain.value = params.vol; save(); };
+function setSource(url, title, track, artist) {
+  if (srcUrl) URL.revokeObjectURL(srcUrl);
+  srcUrl = audio.src = url;
+  songTitle = title || '';
+  autoMeta = guessMeta(track || title || '', artist || '');
+  scanSong(url);
+  status(title || '');
+  initAudio();
+  audio.play();
+}
+$('#audioFile').onchange = e => {
+  const f = e.target.files[0];
+  if (f) setSource(URL.createObjectURL(f), f.name, f.name.replace(/\.[^.]+$/, '').replace(/_/g, ' '));
+};
+$('#ytLoad').onclick = async () => {
+  const url = $('#ytUrl').value.trim();
+  if (!url) return;
+  if (location.protocol === 'file:') return status('Links need the local server: run "python server.py" and open http://127.0.0.1:8000');
+  status('Downloading audio…');
+  try {
+    const r = await fetch('/yt?url=' + encodeURIComponent(url));
+    if (!r.ok) return status(`Failed (${r.status}): ${r.statusText}`);
+    const h = k => decodeURIComponent(r.headers.get(k) || '');
+    setSource(URL.createObjectURL(await r.blob()), h('X-Title'), h('X-Track'), h('X-Artist'));
+  } catch (e) { status('Failed: ' + e.message); }
+};
+$('#ytUrl').onkeydown = e => e.key === 'Enter' && $('#ytLoad').click();
+
+// ---------- Song overlay (title + artist, bottom right) ----------
+// Auto-filled on load; "Artist - Title" uploads are split and "(Official Video)"-style tags dropped.
+// Edits in the Title/Artist boxes are saved per song (same key as the drop markers).
+let autoMeta = { t: '', a: '' }, meta = { t: '', a: '' };
+function guessMeta(title, artist) {
+  let t = title.trim(), a = artist.trim();
+  const m = t.match(/^(.+?)\s+[-–—]\s+(.+)$/);
+  if (m) { a = m[1]; t = m[2]; }
+  t = t.replace(/\s*[([][^)\]]*(official|video|audio|lyric|visuali[sz]er|\bhd\b|4k|remaster)[^)\]]*[)\]]/gi, '').trim();
+  return { t, a };
+}
+const metaKey = () => 'tnvMeta:' + songTitle + ':' + Math.round(audio.duration);
+audio.addEventListener('loadedmetadata', () => {
+  try { meta = JSON.parse(lsGet(metaKey())) || { ...autoMeta }; } catch { meta = { ...autoMeta }; }
+  $('#ovTitle').value = meta.t; $('#ovArtist').value = meta.a;
+});
+for (const [id, k] of [['#ovTitle', 't'], ['#ovArtist', 'a']])
+  $(id).oninput = e => { meta[k] = e.target.value; if (audio.duration) lsSet(metaKey(), JSON.stringify(meta)); };
+function drawOverlay() {
+  if (!params.ovOn || !(meta.t || meta.a)) return;
+  const s = params.ovSize * u, m = params.ovMargin * u, x = W - m;
+  let y = H - m;
+  out.save();
+  out.globalAlpha = params.ovAlpha;
+  out.textAlign = 'right';
+  out.shadowColor = 'rgba(0,0,0,.65)'; out.shadowBlur = 14 * u;
+  if (meta.a) {
+    out.font = `300 ${s * 0.58}px "Segoe UI", system-ui, sans-serif`; out.fillStyle = 'rgba(255,255,255,.72)';
+    out.fillText(meta.a, x, y);
+    y -= s * 0.58 * 1.3;
+  }
+  if (meta.t) { out.font = `700 ${s}px "Segoe UI", system-ui, sans-serif`; out.fillStyle = '#fff'; out.fillText(meta.t, x, y); }
+  out.restore();
+}
+
+// ---------- Images ----------
+const loadImg = src => new Promise(res => { const i = new Image(); i.onload = () => res(i); i.src = src; });
+const DEFAULT_LOGO = 'data:image/svg+xml,' + encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><circle cx="100" cy="100" r="100" fill="#0b0b0b"/>
+   <circle cx="100" cy="100" r="86" fill="none" stroke="#fff" stroke-width="5"/>
+   <path d="M100 48 L148 136 L52 136 Z" fill="none" stroke="#fff" stroke-width="9" stroke-linejoin="round"/></svg>`);
+// Images are saved downscaled as data URLs so they survive reloads.
+const lsGet = k => { try { return localStorage.getItem(k); } catch {} };
+const lsSet = (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch { status('Image too large to remember after reload'); } };
+function shrink(img, max, type) {
+  const s = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+  const c = document.createElement('canvas');
+  c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL(type, 0.9);
+}
+let logo, bgImg;
+loadImg(lsGet('tnvLogo') || DEFAULT_LOGO).then(i => logo = i);
+if (lsGet('tnvBg')) loadImg(lsGet('tnvBg')).then(i => { bgImg = i; renderBg(); });
+$('#logoFile').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  logo = await loadImg(URL.createObjectURL(f));
+  lsSet('tnvLogo', shrink(logo, 1024, 'image/png'));
+};
+$('#bgFile').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  bgImg = await loadImg(URL.createObjectURL(f)); renderBg();
+  lsSet('tnvBg', shrink(bgImg, 2560, 'image/jpeg'));
+};
+$('#bgClear').onclick = () => { bgImg = null; renderBg(); lsSet('tnvBg', null); };
+
+// ---------- Presets ----------
+// A preset is the look: every slider, the layer colors and (optionally) the logo + background images.
+// Saved in this browser by name, or exported / imported as a .json file to share. Imported files are
+// untrusted: only known sliders (clamped to their range), #rrggbb colors and data:image/ URLs are used.
+function currentPreset(withImages) {
+  const pr = { app: 'trap-visualizer', version: 1, params: Object.fromEntries(P.map(([k]) => [k, params[k]])), colors: [...params.colors] };
+  if (withImages) pr.images = { logo: lsGet('tnvLogo') || null, bg: lsGet('tnvBg') || null };
+  return pr;
+}
+async function applyPreset(pr) {
+  for (const [k, , min, max] of P) {
+    const v = pr.params?.[k];
+    if (typeof v !== 'number' || !isFinite(v)) continue;
+    params[k] = clamp(v, min, max);
+    const [inp, out] = inputs[k];
+    inp.value = out.value = params[k];
+  }
+  if (Array.isArray(pr.colors))
+    params.colors = pr.colors.filter(c => /^#[0-9a-f]{6}$/i.test(c)).concat(DEFAULT_COLORS).slice(0, DEFAULT_COLORS.length);
+  buildColors(); resizeParticles(); save();
+  if (pr.images) {
+    const img = s => typeof s === 'string' && s.startsWith('data:image/') ? s : null;
+    const l = img(pr.images.logo), b = img(pr.images.bg);
+    logo = await loadImg(l || DEFAULT_LOGO); lsSet('tnvLogo', l);
+    bgImg = b ? await loadImg(b) : null; lsSet('tnvBg', b);
+  }
+  renderBg();
+}
+const presetStore = () => { try { return JSON.parse(lsGet('tnvPresets')) || {}; } catch { return {}; } };
+function listPresets(selected = '') {
+  const sel = $('#pSel');
+  sel.length = 1; // keep the placeholder option
+  for (const n of Object.keys(presetStore()).sort()) sel.add(new Option(n, n));
+  sel.value = selected;
+}
+function storePreset(name, pr) {
+  const all = presetStore();
+  all[name] = pr;
+  try { localStorage.setItem('tnvPresets', JSON.stringify(all)); listPresets(name); return true; }
+  catch { status('Not enough browser storage for this preset — untick "images" or use Export instead'); return false; }
+}
+listPresets();
+$('#pSel').onchange = async e => {
+  const name = e.target.value, pr = presetStore()[name];
+  if (pr) { await applyPreset(pr); status(`Loaded preset "${name}"`); }
+};
+$('#pSave').onclick = () => {
+  const name = prompt('Preset name', $('#pSel').value)?.trim();
+  if (name && storePreset(name, currentPreset($('#pImg').checked))) status(`Saved preset "${name}"`);
+};
+$('#pDel').onclick = () => {
+  const name = $('#pSel').value, all = presetStore();
+  if (!name || !confirm(`Delete preset "${name}"?`)) return;
+  delete all[name];
+  try { localStorage.setItem('tnvPresets', JSON.stringify(all)); } catch {}
+  listPresets(); status(`Deleted preset "${name}"`);
+};
+$('#pExport').onclick = () => {
+  const name = $('#pSel').value || 'my-look';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(currentPreset($('#pImg').checked), null, 1)], { type: 'application/json' }));
+  a.download = name.replace(/[\\/:*?"<>|]/g, '') + '.trapviz.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+};
+$('#pImport').onclick = () => $('#pFile').click();
+$('#pFile').onchange = async e => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  let pr;
+  try { pr = JSON.parse(await f.text()); } catch { return status('That file isn\'t a preset (invalid JSON)'); }
+  if (pr?.app !== 'trap-visualizer' || typeof pr.params !== 'object') return status('That file isn\'t a trap-visualizer preset');
+  await applyPreset(pr);
+  const name = f.name.replace(/\.trapviz\.json$|\.json$/i, '');
+  storePreset(name, pr);
+  status(`Imported preset "${name}"`);
+};
+
+// draw img to cover a w×h box centered at (x, y)
+function drawCover(g, img, x, y, w, h) {
+  const s = Math.max(w / img.width, h / img.height);
+  g.drawImage(img, x - img.width * s / 2, y - img.height * s / 2, img.width * s, img.height * s);
+}
+
+// ---------- Canvas ----------
+// The scene is drawn to `sc`, then composited to the screen (with chromatic aberration if on).
+const cv = $('#c'), out = cv.getContext('2d');
+const mk = () => { const c = document.createElement('canvas'); return [c, c.getContext('2d')]; };
+const [sc, g] = mk(), [bg, bgg] = mk(), [tmp, tg] = mk();
+let W, H, u, rendering = false;
+function setSize(w, h) {
+  W = cv.width = sc.width = bg.width = tmp.width = w;
+  H = cv.height = sc.height = bg.height = tmp.height = h;
+  u = Math.min(W, H) / 1080;
+  renderBg();
+}
+function resize() { // live view follows the window; a render sets its own size
+  if (rendering) return;
+  const dpr = devicePixelRatio || 1;
+  setSize(Math.round(innerWidth * dpr), Math.round(innerHeight * dpr));
+}
+function renderBg() {
+  bgg.filter = 'none';
+  if (bgImg) {
+    const b = params.bgBlur * u;
+    bgg.filter = b ? `blur(${b}px)` : 'none';
+    drawCover(bgg, bgImg, W / 2, H / 2, W + b * 4, H + b * 4); // overscan hides blurred edges
+    bgg.filter = 'none';
+  } else {
+    const gr = bgg.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.hypot(W, H) / 2);
+    gr.addColorStop(0, '#1a1a22'); gr.addColorStop(1, '#000');
+    bgg.fillStyle = gr; bgg.fillRect(0, 0, W, H);
+  }
+  bgg.fillStyle = `rgba(0,0,0,${params.bgDim})`;
+  bgg.fillRect(0, 0, W, H);
+}
+addEventListener('resize', resize);
+resize();
+
+// soft particle sprite
+const dot = document.createElement('canvas'); dot.width = dot.height = 64;
+{ const d = dot.getContext('2d'), gr = d.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.35, 'rgba(255,255,255,.6)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  d.fillStyle = gr; d.fillRect(0, 0, 64, 64); }
+
+const newParticle = anyZ => ({ x: Math.random() * 2 - 1, y: Math.random() * 2 - 1, z: anyZ ? Math.random() : 1, s: 0.4 + Math.random() * 1.2 });
+let particles = [];
+function resizeParticles() {
+  while (particles.length < params.pCount) particles.push(newParticle(true));
+  particles.length = params.pCount;
+}
+resizeParticles();
+
+// wind lines fly out of the center like the particles, as wavy streaks along their direction of travel
+function newWind(anyZ) {
+  const a = Math.random() * Math.PI * 2, d = 0.15 + Math.random() * 0.85;
+  return { dx: Math.cos(a), dy: Math.sin(a), d, z: anyZ ? Math.random() : 1, ph: Math.random() * 7, a: 0.6 + Math.random() * 0.8 };
+}
+let wind = [];
+
+// ---------- Analysis ----------
+let cur = new Float32Array(0), hist = [], bass = 0, bassPeak = 0;
+function analyse(dt) {
+  const n = params.bands | 0;
+  if (cur.length !== n) { cur = new Float32Array(n); hist = []; }
+  const raw = new Float32Array(n);
+  let bassRaw = 0;
+  if (analyser && clock.playing()) {
+    analyser.smoothingTimeConstant = params.smooth;
+    analyser.getByteFrequencyData(freq);
+    const binHz = analyser.context.sampleRate / 2 / freq.length;
+    const lo = Math.log(params.minHz), hi = Math.log(Math.max(params.maxHz, params.minHz * 2));
+    for (let i = 0; i < n; i++) {
+      const b0 = Math.exp(lo + (hi - lo) * i / n) / binHz, b1 = Math.exp(lo + (hi - lo) * (i + 1) / n) / binHz;
+      let v = 0;
+      if (b1 - b0 < 1) { const b = (b0 + b1) / 2, j = Math.floor(b), t = b - j; v = freq[j] * (1 - t) + freq[j + 1] * t; }
+      else for (let j = Math.floor(b0); j < Math.ceil(b1); j++) v = Math.max(v, freq[j]);
+      raw[i] = Math.pow(clamp(v / 255 * params.sens * (1 + params.tilt * i / n)), params.power);
+    }
+    const bEnd = Math.max(1, Math.round(params.bassHz / binHz));
+    for (let j = 1; j <= bEnd; j++) bassRaw += freq[j];
+    bassRaw = bassRaw / bEnd / 255;
+  }
+  // spatial smoothing; ends reflect (they're the mirror seams)
+  for (let p = 0; p < params.blur; p++) {
+    const c = raw.slice();
+    for (let i = 0; i < n; i++) raw[i] = (c[Math.max(0, i - 1)] + 2 * c[i] + c[Math.min(n - 1, i + 1)]) / 4;
+  }
+  // fast attack, linear fall
+  const fall = params.fall * dt * 60;
+  for (let i = 0; i < n; i++) cur[i] = raw[i] > cur[i] ? raw[i] : Math.max(raw[i], cur[i] - fall);
+  hist.unshift(cur.slice());
+  hist.length = Math.min(hist.length, params.layers * params.delay + 1);
+
+  bass += (bassRaw - bass) * (bassRaw > bass ? 0.7 : 0.18) * Math.min(1, dt * 60);
+  // kick is relative to the song's recent bass peak, so it adapts to any mix loudness
+  bassPeak = Math.max(bass, bassPeak * Math.pow(0.995, dt * 60), 0.05);
+  return clamp((bass / bassPeak - params.thresh) / (1 - params.thresh));
+}
+
+// ---------- Drops (marked by hand in the drop editor) ----------
+// On load the song is decoded once into a peak waveform + bass envelope for the editor to draw.
+const WAVE_HZ = 200;
+let wave = null, drops = [], drop = 0, dropSign = 1, prevT = 0, scanId = 0, songTitle = '';
+async function scanSong(url) {
+  const id = ++scanId;
+  wave = null;
+  try {
+    const ab = await new OfflineAudioContext(1, 1, 44100).decodeAudioData(await (await fetch(url)).arrayBuffer());
+    const off = new OfflineAudioContext(1, ab.length, ab.sampleRate), src = off.createBufferSource();
+    const lp = off.createBiquadFilter(); lp.frequency.value = 120; lp.Q.value = -3.01; // Butterworth lowpass → bass only
+    src.buffer = ab; src.connect(lp).connect(off.destination); src.start();
+    const low = (await off.startRendering()).getChannelData(0), hop = Math.round(ab.sampleRate / WAVE_HZ), n = Math.floor(ab.length / hop);
+    const chans = Array.from({ length: ab.numberOfChannels }, (_, c) => ab.getChannelData(c));
+    const peaks = new Float32Array(n), bass = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      let p = 0, s = 0;
+      for (let j = i * hop; j < (i + 1) * hop; j++) { for (const ch of chans) p = Math.max(p, Math.abs(ch[j])); s += low[j] * low[j]; }
+      peaks[i] = p; bass[i] = Math.sqrt(s / hop);
+    }
+    const ref = bass.slice().sort()[Math.floor(n * 0.99)] || 1;
+    for (let i = 0; i < n; i++) bass[i] = Math.min(1, bass[i] / ref);
+    if (id === scanId) wave = { peaks, bass };
+  } catch (e) { if (id === scanId) status('Waveform failed: ' + e.message); }
+}
+
+// markers are saved per song (title + length)
+const dropKey = () => 'tnvDrops:' + songTitle + ':' + Math.round(audio.duration);
+function saveDrops() {
+  drops.sort((a, b) => a - b);
+  lsSet(dropKey(), drops.length ? JSON.stringify(drops) : null);
+  showDrops();
+}
+function showDrops() {
+  $('#dropInfo').value = drops.length ? `${drops.length} drop${drops.length > 1 ? 's' : ''}: ${drops.map(fmt).join(', ')}` : 'no drops marked';
+  $('#marks').innerHTML = audio.duration ? drops.map(d => `<i style="left:${d / audio.duration * 100}%"></i>`).join('') : '';
+}
+audio.addEventListener('loadedmetadata', () => {
+  try { drops = JSON.parse(lsGet(dropKey())) || []; } catch { drops = []; }
+  sel = null; showDrops();
+});
+
+// ---------- Drop editor ----------
+const ed = $('#dropEd'), wc = $('#wave'), wg = wc.getContext('2d');
+let view = { t0: 0, dur: 1 }, sel = null, drag = null;
+const edOpen = () => !ed.hidden;
+const fmtMs = t => `${t / 60 | 0}:${(t % 60).toFixed(3).padStart(6, '0')}`;
+const xToT = x => view.t0 + x / wc.clientWidth * view.dur;
+const tToX = t => (t - view.t0) / view.dur * wc.clientWidth;
+const clampView = () => { view.dur = clamp(view.dur, 0.2, audio.duration); view.t0 = clamp(view.t0, 0, audio.duration - view.dur); };
+const markerAt = x => drops.find(d => Math.abs(tToX(d) - x) < 6);
+const ms = t => Math.round(clamp(t, 0, audio.duration) * 1000) / 1000;
+function markAt(t) { t = ms(t); if (!drops.some(d => Math.abs(d - t) < 0.01)) drops.push(t); sel = t; saveDrops(); }
+function delSel() { if (sel == null) return; drops = drops.filter(d => d !== sel); sel = null; saveDrops(); }
+function nudge(dt) {
+  if (sel == null) return audio.currentTime = clamp(audio.currentTime + dt, 0, audio.duration);
+  drops[drops.indexOf(sel)] = sel = ms(sel + dt);
+  saveDrops();
+}
+$('#edOpen').onclick = () => {
+  if (!audio.duration) return status('Load a song first');
+  ed.hidden = false; view = { t0: 0, dur: audio.duration };
+};
+$('#edClose').onclick = () => ed.hidden = true;
+$('#edPlay').onclick = () => $('#play').click();
+$('#edPre').onclick = () => { audio.currentTime = Math.max(0, (sel ?? audio.currentTime) - 2); audio.play(); };
+$('#edMark').onclick = () => markAt(audio.currentTime);
+$('#edDel').onclick = delSel;
+$('#edClear').onclick = () => { if (drops.length && confirm('Remove all drop markers for this song?')) { drops = []; sel = null; saveDrops(); } };
+
+wc.onwheel = e => {
+  e.preventDefault();
+  const t = xToT(e.offsetX);
+  view.dur *= Math.pow(1.2, e.deltaY / 100);
+  view.dur = clamp(view.dur, 0.2, audio.duration);
+  view.t0 = t - e.offsetX / wc.clientWidth * view.dur; // keep the time under the cursor fixed
+  clampView();
+};
+// press on a marker: click selects, drag moves it. Press elsewhere: click seeks, drag pans.
+wc.onpointerdown = e => { drag = { x: e.offsetX, t0: view.t0, hit: markerAt(e.offsetX), moved: false }; wc.setPointerCapture(e.pointerId); };
+wc.onpointermove = e => {
+  if (!drag) return wc.style.cursor = markerAt(e.offsetX) != null ? 'ew-resize' : 'crosshair';
+  if (Math.abs(e.offsetX - drag.x) > 3) drag.moved = true;
+  if (!drag.moved) return;
+  if (drag.hit != null) drops[drops.indexOf(drag.hit)] = drag.hit = sel = ms(xToT(e.offsetX));
+  else { view.t0 = drag.t0 - (e.offsetX - drag.x) / wc.clientWidth * view.dur; clampView(); }
+};
+wc.onpointerup = e => {
+  if (!drag) return;
+  if (drag.moved) { if (drag.hit != null) saveDrops(); }
+  else if (drag.hit != null) sel = drag.hit;
+  else { sel = null; audio.currentTime = xToT(e.offsetX); }
+  drag = null;
+};
+
+function drawEditor() {
+  const dpr = devicePixelRatio || 1, w = wc.clientWidth, h = wc.clientHeight, t = audio.currentTime;
+  if (wc.width !== Math.round(w * dpr) || wc.height !== Math.round(h * dpr)) { wc.width = Math.round(w * dpr); wc.height = Math.round(h * dpr); }
+  wg.setTransform(dpr, 0, 0, dpr, 0, 0);
+  wg.fillStyle = '#0b0b10'; wg.fillRect(0, 0, w, h);
+  // keep the playhead in view while playing
+  if (!audio.paused && !drag && (t > view.t0 + view.dur || t < view.t0)) { view.t0 = t - view.dur * 0.1; clampView(); }
+
+  const top = 18, mid = (h + top) / 2, amp = (h - top) / 2 - 2;
+  if (wave) {
+    const n = wave.peaks.length;
+    for (let x = 0; x < w; x++) {
+      const a = Math.max(0, Math.floor(xToT(x) * WAVE_HZ)), b = Math.min(n, Math.max(a + 1, Math.floor(xToT(x + 1) * WAVE_HZ)));
+      let p = 0, bs = 0;
+      for (let i = a; i < b; i++) { if (wave.peaks[i] > p) p = wave.peaks[i]; if (wave.bass[i] > bs) bs = wave.bass[i]; }
+      wg.fillStyle = '#4a4d5e'; wg.fillRect(x, mid - p * amp, 1, p * amp * 2);
+      wg.fillStyle = '#3fb6ff'; wg.fillRect(x, mid - bs * amp * 0.7, 1, bs * amp * 1.4);
+    }
+  } else {
+    wg.fillStyle = '#888'; wg.fillText('analysing waveform…', 10, mid);
+  }
+
+  // time ruler
+  const step = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60].find(s => s / view.dur * w >= 70) ?? 60;
+  wg.fillStyle = '#16161e'; wg.fillRect(0, 0, w, top);
+  wg.fillStyle = '#888'; wg.font = '10px system-ui';
+  for (let s = Math.ceil(view.t0 / step) * step; s <= view.t0 + view.dur; s += step) {
+    const x = Math.round(tToX(s)) + 0.5;
+    wg.fillRect(x, top - 5, 1, 5);
+    wg.fillText(step < 1 ? fmtMs(s).slice(0, step < 0.1 ? -1 : -2) : fmt(s), x + 3, 11);
+  }
+
+  // drop markers + playhead
+  for (const d of drops) {
+    const x = tToX(d);
+    if (x < -5 || x > w + 5) continue;
+    wg.fillStyle = d === sel ? '#ffd400' : '#ff3b5c';
+    wg.fillRect(x - 1, top, 2, h - top);
+    wg.beginPath(); wg.moveTo(x - 6, top); wg.lineTo(x + 6, top); wg.lineTo(x, top + 8); wg.fill();
+  }
+  wg.fillStyle = '#fff'; wg.fillRect(tToX(t) - 0.5, 0, 1.5, h);
+  $('#edPlay').textContent = audio.paused ? '▶' : '❚❚';
+  $('#edTime').value = fmtMs(t) + (sel != null ? `   ·   selected drop ${fmtMs(sel)}` : '');
+}
+function triggerDrop() {
+  drop = 1; dropSign = Math.random() < 0.5 ? -1 : 1;
+  if (params.gOn) gEnv = 1;
+}
+function dropEnvelope(dt) {
+  const t = clock.t();
+  if (testDropAt && performance.now() >= testDropAt) { testDropAt = 0; testHitAt = performance.now(); triggerDrop(); }
+  // fire when playback crosses a drop (a jump > 0.5s is a seek, not playback)
+  if (params.dOn && clock.playing() && t > prevT && t - prevT < 0.5 && drops.some(d => d > prevT && d <= t)) triggerDrop();
+  prevT = t;
+  drop = Math.max(0, drop - dt / params.dLen);
+  return drop * drop; // ease-out envelope
+}
+// ---------- Impact frame ----------
+// Optional fade toward black (ease-in) leading into each drop marker, then a short black / black & white /
+// inverted "impact frame" with a slight push-in. Timing 1 (anime-style) puts it ON the hit, flickering
+// between the style and its opposite; timing 0 puts it just before the hit.
+let testDropAt = 0, testHitAt = 0;
+function testDrop() { // manual test plays the whole sequence, like a real marker
+  if (!params.ifOn) return triggerDrop();
+  testDropAt = performance.now() + params.ifFade + (params.ifTiming ? 0 : params.ifLen); // fired by dropEnvelope
+}
+function impactState() { // → null, { fade: 0..1 } during the lead-in fade, or { hit: 0..1, since } during the impact frame
+  if (!params.ifOn) return null;
+  const hitS = params.ifLen / 1000, fadeS = params.ifFade / 1000, onHit = params.ifTiming === 1, now = performance.now();
+  let rem = testDropAt ? (testDropAt - now) / 1000 : Infinity, since = testHitAt ? (now - testHitAt) / 1000 : Infinity;
+  if (clock.playing()) { // seconds until the next drop marker / since the last one, on the song clock
+    const t = clock.t(), next = drops.find(d => d > t), prev = drops.findLast(d => d <= t);
+    if (next !== undefined) rem = Math.min(rem, next - t);
+    if (prev !== undefined) since = Math.min(since, t - prev);
+  }
+  if (onHit ? since < hitS : rem <= hitS) return onHit ? { hit: since / hitS, since } : { hit: 1 - rem / hitS, since: hitS - rem };
+  const lead = onHit ? 0 : hitS;
+  if (rem > lead && rem <= lead + fadeS) { const f = 1 - (rem - lead) / fadeS; return { fade: f * f }; }
+  return null;
+}
+function impactFrame(st) {
+  if (st.fade !== undefined) { out.fillStyle = `rgba(0,0,0,${st.fade * params.ifDepth})`; out.fillRect(0, 0, W, H); return; }
+  let style = params.ifMode;
+  if (params.ifFlick && Math.floor(st.since * 1000 / params.ifFlick) % 2) style = style === 1 ? 2 : style === 2 ? 1 : 2; // flicker
+  if (style === 0) { out.fillStyle = '#000'; out.fillRect(0, 0, W, H); return; }
+  tg.globalCompositeOperation = 'copy'; tg.drawImage(cv, 0, 0);
+  const z = 1 + params.ifZoom * st.hit; // slight push-in while the impact frame is up
+  out.fillStyle = style === 2 ? '#fff' : '#000'; out.fillRect(0, 0, W, H);
+  out.filter = `grayscale(1) contrast(${params.ifContrast})` + (style === 2 ? ' invert(1)' : '');
+  out.drawImage(tmp, W / 2 - W * z / 2, H / 2 - H * z / 2, W * z, H * z);
+  out.filter = 'none';
+}
+$('#dropTest').onclick = testDrop;
+groups['Impact frame'].insertAdjacentHTML('beforeend',
+  '<div class="hint" style="margin-top:2px">Timing: 0 just before the drop · 1 on the hit (anime)<br>Style: 0 blackout · 1 black &amp; white · 2 inverted</div>');
+
+// ---------- Drawing ----------
+function ringPath(arr, cx, cy, R, Hh) {
+  const n = arr.length, rot = params.rot * Math.PI / 180, pts = [];
+  const add = (a, v) => { const r = R + params.base * u + v * Hh; pts.push(cx + r * Math.sin(a + rot), cy - r * Math.cos(a + rot)); };
+  if (params.mirror) {
+    for (let i = 0; i < n; i++) add((i + 0.5) / n * Math.PI, arr[i]);
+    for (let i = n - 1; i >= 0; i--) add(-(i + 0.5) / n * Math.PI, arr[i]);
+  } else for (let i = 0; i < n; i++) add((i + 0.5) / n * Math.PI * 2, arr[i]);
+  // closed smooth curve through midpoints
+  const m = pts.length / 2, X = i => pts[(i % m) * 2], Y = i => pts[(i % m) * 2 + 1];
+  g.beginPath();
+  g.moveTo((X(0) + X(1)) / 2, (Y(0) + Y(1)) / 2);
+  for (let i = 1; i <= m; i++) g.quadraticCurveTo(X(i), Y(i), (X(i) + X(i + 1)) / 2, (Y(i) + Y(i + 1)) / 2);
+  g.closePath();
+}
+
+// same starfield projection as the particles: head at depth z, tail further back at z + Length
+function drawWind(cx, cy, D, spread, kick, dt, t, burst) {
+  while (wind.length < params.wCount) wind.push(newWind(true));
+  wind.length = params.wCount;
+  g.lineCap = g.lineJoin = 'round';
+  const speed = params.wSpeed * (1 + kick * params.wBoost) * burst * 0.18 * dt, proj = spread * 0.35;
+  for (const s of wind) {
+    s.z -= speed;
+    const r1 = s.d / s.z * proj, r0 = s.d / (s.z + params.wStreak) * proj, len = r1 - r0;
+    if (s.z <= 0.02 || r0 > D + 50) { Object.assign(s, newWind(false)); continue; }
+    const near = 1 - Math.min(1, s.z);           // grows 0→1 as the line approaches, like particle size
+    const amp = params.wAmp * u * s.a * (0.4 + near), k = params.wWaves * 2 * Math.PI / len, ph = s.ph + t * params.wWiggle;
+    g.beginPath();
+    for (let i = 0; i <= 32; i++) {
+      const f = i / 32, r = r0 + f * len, w = amp * Math.sin(Math.PI * f) * Math.sin(k * f * len - ph); // ends pinned to the path
+      g.lineTo(cx + s.dx * r - s.dy * w, cy + s.dy * r + s.dx * w);
+    }
+    const gr = g.createLinearGradient(cx + s.dx * r0, cy + s.dy * r0, cx + s.dx * r1, cy + s.dy * r1);
+    gr.addColorStop(0, 'rgba(255,255,255,0)');
+    gr.addColorStop(1, `rgba(255,255,255,${params.wAlpha * clamp(near * 2.5)})`);
+    g.strokeStyle = gr;
+    g.lineWidth = params.wWidth * u * (0.5 + near);
+    g.stroke();
+  }
+}
+
+// splits the scene into R/G/B copies shifted apart (offset along caAngle + radial scale)
+function composite(cx, cy, kick, env) {
+  const amt = 1 + kick * params.caBoost + env * params.dCA, off = params.caOffset * u * amt, rad = params.caRadial * amt;
+  if (!off && !rad) return out.drawImage(sc, 0, 0);
+  const a = params.caAngle * Math.PI / 180, ax = Math.cos(a) * off, ay = Math.sin(a) * off;
+  out.fillStyle = '#000'; out.fillRect(0, 0, W, H);
+  for (const [col, sg] of [['#f00', 1], ['#0f0', 0], ['#00f', -1]]) {
+    tg.globalCompositeOperation = 'copy'; tg.drawImage(sc, 0, 0);
+    tg.globalCompositeOperation = 'multiply'; tg.fillStyle = col; tg.fillRect(0, 0, W, H);
+    const s = 1 + sg * rad;
+    out.globalCompositeOperation = 'lighter';
+    out.drawImage(tmp, cx - W * s / 2 + sg * ax, cy - H * s / 2 + sg * ay, W * s, H * s);
+  }
+  out.globalCompositeOperation = 'source-over';
+}
+
+// ---------- Glitch slices ----------
+// Post-process on the finished frame: strips/blocks shifted sideways (full strips wrap around the edge),
+// some tinted magenta/cyan (multiply, so empty areas stay dark). The pattern holds and jumps gRate times a second, like a real signal glitch.
+let gEnv = 0, gSet = [], gTimer = 0;
+function makeSlices(I) {
+  const n = Math.max(1, Math.round(params.gSlices * I)), set = [];
+  for (let i = 0; i < n; i++) {
+    // bias strips toward the middle, where the ring is (shifting empty background shows nothing)
+    const h = Math.max(2, Math.random() * params.gHeight * u), y = clamp(H / 2 + (Math.random() + Math.random() - 1) * H * 0.45 - h / 2, 0, H - h);
+    const block = Math.random() < params.gBlocks, w = block ? W * (0.1 + Math.random() * 0.4) : W;
+    set.push({
+      x: block ? Math.random() * (W - w) : 0, y, w, h, block,
+      dx: (Math.random() * 2 - 1) * params.gShift * u * I,
+      tint: Math.random() < params.gRGB * 0.5 ? (Math.random() < 0.5 ? '#ff3ca0' : '#30e0ff') : null,
+    });
+  }
+  return set;
+}
+function glitch(dt, kick) {
+  gEnv = Math.max(0, gEnv - dt / params.gLen);
+  const I = Math.max(gEnv, params.gBass * kick * kick);
+  if (I < 0.02) return (gSet = []);
+  if ((gTimer -= dt) <= 0 || !gSet.length) { gTimer = 1 / params.gRate; gSet = makeSlices(I); }
+  tg.globalCompositeOperation = 'copy'; tg.drawImage(cv, 0, 0);
+  for (const s of gSet) {
+    out.drawImage(tmp, s.x, s.y, s.w, s.h, s.x + s.dx, s.y, s.w, s.h);
+    if (!s.block) out.drawImage(tmp, 0, s.y, W, s.h, s.dx - Math.sign(s.dx) * W, s.y, W, s.h); // wrap-around
+    if (s.tint) { // multiply: bright content turns magenta/cyan, black stays black
+      out.globalCompositeOperation = 'multiply';
+      out.fillStyle = s.tint; out.fillRect(s.block ? s.x + s.dx : 0, s.y, s.w, s.h);
+      out.globalCompositeOperation = 'source-over';
+    }
+  }
+}
+
+let last = performance.now(), camAngle = 0, tiltSign = 1, kickOn = false;
+// live view: driven by the display's frame rate; the offline render calls renderFrame itself
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (rendering) return;
+  renderFrame(dt, now / 1000);
+  if (edOpen()) drawEditor();
+}
+requestAnimationFrame(frame);
+
+function renderFrame(dt, t) {
+  const kick = analyse(dt), env = dropEnvelope(dt), burst = 1 + env * params.dBurst;
+  const cx = W / 2, cy = H / 2, D = Math.hypot(W, H) / 2;
+
+  // camera: slow sway + a tilt on each kick that alternates direction (+ a spin on drops)
+  if (kick > 0.5 && !kickOn) { kickOn = true; tiltSign = -tiltSign; } else if (kick < 0.15) kickOn = false;
+  const target = (params.camSway * Math.sin(t * 2 * Math.PI * params.camSpeed) + tiltSign * kick * params.camKick + dropSign * env * params.dSpin) * Math.PI / 180;
+  camAngle += (target - camAngle) * (1 - Math.pow(1 - params.camEase, dt * 60));
+
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+  const sh = (params.shake * kick * kick + params.dShake * env) * u, zoom = 1 + env * params.dZoom;
+  g.translate(cx + (Math.random() * 2 - 1) * sh, cy + (Math.random() * 2 - 1) * sh);
+  g.rotate(camAngle);
+  g.scale(zoom, zoom);
+  g.translate(-cx, -cy);
+
+  // background with bass zoom, overscanned so shake and rotation never show edges
+  const ca = Math.abs(Math.cos(camAngle)), sa = Math.abs(Math.sin(camAngle));
+  const bz = (1.03 + kick * params.bgZoom) * (ca + sa * Math.max(W / H, H / W));
+  g.drawImage(bg, cx - W * bz / 2, cy - H * bz / 2, W * bz, H * bz);
+
+  // particles: fly outward from center (starfield projection)
+  const spread = Math.max(W, H) * 0.5, speed = params.pSpeed * (1 + kick * params.pBoost) * burst * 0.18 * dt;
+  for (const p of particles) {
+    p.z -= speed;
+    const px = cx + p.x / p.z * spread * 0.35, py = cy + p.y / p.z * spread * 0.35;
+    if (p.z <= 0.02 || Math.hypot(px - cx, py - cy) > D + 50) { Object.assign(p, newParticle(false)); continue; }
+    const s = params.pSize * u * p.s * (1.2 / p.z + 1) * 2;
+    g.globalAlpha = params.pAlpha * clamp((1 - p.z) * 2.5);
+    g.drawImage(dot, px - s / 2, py - s / 2, s, s);
+  }
+  g.globalAlpha = 1;
+
+  drawWind(cx, cy, D, spread, kick, dt, t, burst);
+
+  // spectrum layers, back (most delayed) to front
+  const scale = 1 + kick * params.pulse, R = params.radius * u * scale, Hh = params.height * u * (1 + env * params.dRing);
+  g.shadowBlur = params.glow * u;
+  for (let L = params.layers - 1; L >= 0; L--) {
+    const arr = hist[Math.min(hist.length - 1, L * params.delay)];
+    if (!arr) continue;
+    g.fillStyle = g.shadowColor = params.colors[L] || '#fff';
+    ringPath(arr, cx, cy, R, Hh * (1 + L * params.spread));
+    g.fill();
+  }
+  g.shadowBlur = 0;
+
+  // logo clipped to circle
+  g.save();
+  g.beginPath(); g.arc(cx, cy, R, 0, Math.PI * 2); g.clip();
+  g.fillStyle = '#000'; g.fill();
+  if (logo) drawCover(g, logo, cx, cy, R * 2, R * 2);
+  g.restore();
+
+  composite(cx, cy, kick, env);
+  drawOverlay();
+  if (env > 0 && params.dFlash) { out.fillStyle = `rgba(255,255,255,${params.dFlash * env * env})`; out.fillRect(0, 0, W, H); }
+  const ist = impactState(); // after the flash: an on-hit impact frame replaces it, then the flash shows through
+  if (ist) impactFrame(ist);
+  glitch(dt, kick);
+}
+
+// ---------- Offline render ----------
+// Renders the whole song frame by frame at a fixed size/fps. It isn't tied to real time, so every frame is
+// exact even on slow machines. Audio analysis runs in an OfflineAudioContext that pauses at each frame's
+// time; frames and audio are encoded with WebCodecs (H.264 + AAC, Opus fallback) and muxed into an MP4.
+const MP4_MUXER = './vendor/mp4-muxer.mjs'; // mp4-muxer 5.2.2 (MIT), bundled so rendering works offline
+let renderCancel = false;
+function resetScene() {
+  cur = new Float32Array(0); hist = []; bass = 0; bassPeak = 0;
+  drop = 0; prevT = 0; testDropAt = 0; testHitAt = 0; gEnv = 0; gSet = []; camAngle = 0; kickOn = false;
+  particles = []; resizeParticles(); wind = [];
+}
+function avcCodec(w, h) { // H.264 High profile; level high enough for the frame size at 60 fps
+  const px = w * h;
+  return px > 2560 * 1440 ? 'avc1.640034' : px > 1920 * 1088 ? 'avc1.640033' : 'avc1.64002a';
+}
+$('#rCancel').onclick = () => renderCancel = true;
+$('#rGo').onclick = async () => {
+  if (!srcUrl) return status('Load a song first');
+  if (!('VideoEncoder' in window)) return status('This browser can\'t encode video (needs WebCodecs: Chrome or Edge)');
+  const [w, h] = $('#rRes').value.split('x').map(Number), fps = +$('#rFps').value;
+  const bitrate = Math.round(w * h * fps * +$('#rQ').value);
+  const name = ((meta.a ? meta.a + ' - ' : '') + (meta.t || 'visualizer')).replace(/[\\/:*?"<>|]/g, '').trim() + '.mp4';
+  let file = null; // stream straight to disk when the browser allows it (big 4K renders don't fit in memory)
+  if (window.showSaveFilePicker) {
+    try { file = await showSaveFilePicker({ suggestedName: name, types: [{ description: 'MP4 video', accept: { 'video/mp4': ['.mp4'] } }] }); }
+    catch { return; } // save dialog cancelled
+  }
+  try { await renderVideo({ w, h, fps, bitrate, file, name }); }
+  catch (e) { status('Render failed: ' + e.message); console.error(e); }
+};
+
+async function renderVideo({ w, h, fps, bitrate, file, name }) {
+  status('Preparing render…');
+  const { Muxer, ArrayBufferTarget, FileSystemWritableFileStreamTarget } = await import(MP4_MUXER);
+  const ab = await new OfflineAudioContext(2, 1, 48000).decodeAudioData(await (await fetch(srcUrl)).arrayBuffer());
+  const sr = ab.sampleRate, ch = Math.min(2, ab.numberOfChannels), frames = Math.ceil(ab.duration * fps);
+
+  const vcfg = { codec: avcCodec(w, h), width: w, height: h, bitrate, framerate: fps };
+  if (!(await VideoEncoder.isConfigSupported(vcfg)).supported) throw new Error(`H.264 at ${w}×${h} isn't supported here`);
+  let acfg = null;
+  for (const codec of ['mp4a.40.2', 'opus']) {
+    const c = { codec, sampleRate: sr, numberOfChannels: ch, bitrate: 192000 };
+    if ((await AudioEncoder.isConfigSupported(c)).supported) { acfg = c; break; }
+  }
+  if (!acfg) throw new Error('no supported audio encoder (AAC or Opus)');
+
+  const writable = file && await file.createWritable();
+  const muxer = new Muxer({
+    target: writable ? new FileSystemWritableFileStreamTarget(writable) : new ArrayBufferTarget(),
+    video: { codec: 'avc', width: w, height: h, frameRate: fps },
+    audio: { codec: acfg.codec === 'opus' ? 'opus' : 'aac', numberOfChannels: ch, sampleRate: sr },
+    fastStart: writable ? false : 'in-memory',
+  });
+  let encErr = null;
+  const venc = new VideoEncoder({ output: (c, m) => muxer.addVideoChunk(c, m), error: e => encErr = e });
+  venc.configure(vcfg);
+  const aenc = new AudioEncoder({ output: (c, m) => muxer.addAudioChunk(c, m), error: e => encErr = e });
+  aenc.configure(acfg);
+  let audioPos = 0;
+  const feedAudio = upTo => { // encode song audio up to sample `upTo`, interleaved with the video frames
+    while (audioPos < upTo) {
+      const n = Math.min(4096, upTo - audioPos), data = new Float32Array(n * ch);
+      for (let c = 0; c < ch; c++) data.set(ab.getChannelData(c).subarray(audioPos, audioPos + n), c * n);
+      const ad = new AudioData({ format: 'f32-planar', sampleRate: sr, numberOfFrames: n, numberOfChannels: ch, timestamp: Math.round(audioPos / sr * 1e6), data });
+      aenc.encode(ad); ad.close();
+      audioPos += n;
+    }
+  };
+
+  // analysis: same analyser settings as live, fed by an offline context we step one frame at a time
+  const off = new OfflineAudioContext(ch, ab.length, sr), src = off.createBufferSource(), an = off.createAnalyser();
+  an.fftSize = 8192; an.minDecibels = -70; an.maxDecibels = -10;
+  src.buffer = ab; src.connect(an); an.connect(off.destination);
+
+  const live = { analyser, freq, clock: { ...clock } };
+  let T = 0, i = 0;
+  analyser = an; freq = new Uint8Array(an.frequencyBinCount);
+  clock.t = () => T; clock.playing = () => true;
+  audio.pause();
+  rendering = true; renderCancel = false;
+  document.body.classList.add('rendering'); $('#rPanel').hidden = false;
+  setSize(w, h); resetScene();
+  const start = performance.now();
+  const step = async () => {
+    T = i / fps;
+    renderFrame(1 / fps, T);
+    const vf = new VideoFrame(cv, { timestamp: Math.round(i * 1e6 / fps), duration: Math.round(1e6 / fps) });
+    venc.encode(vf, { keyFrame: i % (fps * 2) === 0 });
+    vf.close();
+    feedAudio(Math.min(ab.length, Math.round((i + 1) / fps * sr)));
+    // let the encoder catch up (event-driven: timers get throttled when the tab isn't focused)
+    while (venc.encodeQueueSize > 6) await new Promise(r => venc.addEventListener('dequeue', r, { once: true }));
+    if (i % 10 === 0) {
+      const rate = (i + 1) / ((performance.now() - start) / 1000);
+      $('#rProg').value = i / frames;
+      $('#rInfo').value = `frame ${i + 1} / ${frames} · ${rate.toFixed(0)} fps · ~${fmt((frames - i) / rate)} left`;
+    }
+    i++;
+  };
+  try {
+    await step(); // frame 0 renders before any audio has played
+    const next = () => {
+      if (i >= frames || renderCancel || encErr) return;
+      off.suspend(i / fps).then(async () => {
+        try { await step(); } catch (e) { encErr = e; }
+        next(); off.resume();
+      });
+    };
+    src.start(); next();
+    await off.startRendering();
+    while (i < frames && !renderCancel && !encErr) await step(); // any frames past the last suspend point
+
+    if (renderCancel || encErr) {
+      venc.close(); aenc.close(); await writable?.abort();
+      return status(encErr ? 'Render failed: ' + encErr.message : 'Render cancelled');
+    }
+    feedAudio(ab.length);
+    await venc.flush(); await aenc.flush();
+    muxer.finalize();
+    if (writable) await writable.close();
+    else {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([muxer.target.buffer], { type: 'video/mp4' })); a.download = name; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    }
+    status(`Rendered ${name}: ${fmt(ab.duration)} at ${w}×${h} ${fps} fps in ${fmt((performance.now() - start) / 1000)}`);
+  } finally {
+    analyser = live.analyser; freq = live.freq; Object.assign(clock, live.clock);
+    rendering = false;
+    document.body.classList.remove('rendering'); $('#rPanel').hidden = true;
+    resize(); resetScene();
+  }
+}
+
+// ---------- Keys ----------
+addEventListener('keydown', e => {
+  if (rendering || (e.target.tagName === 'INPUT' && e.target.type === 'text')) return;
+  if (edOpen()) {
+    const k = e.key;
+    if (k === 'Escape') ed.hidden = true;
+    else if (k === 'm' || k === 'M') markAt(audio.currentTime);
+    else if (k === 'Delete' || k === 'Backspace') delSel();
+    else if (k === 'ArrowLeft' || k === 'ArrowRight') nudge((k === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 0.1 : 0.01));
+    else if (e.code === 'Space') $('#play').click();
+    else return;
+    e.preventDefault(); e.target.blur?.();
+    return;
+  }
+  if (e.key === 'h' || e.key === 'H') document.body.classList.toggle('hide');
+  else if (e.key === 'f' || e.key === 'F') document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+  else if (e.key === 'd' || e.key === 'D') testDrop();
+  else if (e.code === 'Space') { e.preventDefault(); e.target.blur?.(); $('#play').click(); }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+# songs downloaded by server.py (yt-dlp)
+cache/
+
+# local tool / editor settings
+.claude/
+.vscode/
+.idea/
+__pycache__/
