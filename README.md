@@ -9,6 +9,12 @@ A Trap Nation-style audio visualizer that runs in the browser. Load a song from 
 - [Node.js](https://nodejs.org/), recommended for YouTube, because yt-dlp uses it to solve YouTube's player challenges
 - Chrome, Edge or Firefox 130+ (rendering uses WebCodecs)
 
+### Browser choice
+
+**Chromium-based browsers (Chrome, Edge, Brave, Opera…) are recommended.** They play the visualizer more smoothly and render MP4s much faster.
+
+**Firefox works**, but expect slower renders and, on heavier effects, a lower frame rate in the live preview.
+
 ## Run it
 
 ```bash
