@@ -1,4 +1,4 @@
-# Trap Visualizer
+# Browser Visualizer
 
 A Trap Nation-style audio visualizer that runs in the browser. Load a song from a file, YouTube or SoundCloud, pick a logo, background and colors, mark the drops, then render an MP4.
 
